@@ -132,6 +132,11 @@
 						</goals>
 					</execution>
 				</executions>
+				<configuration>
+					<executable>C:\Program Files\GnuPG\bin\gpg.exe</executable>
+					<keyname>F14E0E1014A07FDFA757FB8B06E07DCE9EAB402F</keyname>
+					<passphrase>${env.GPG_PASSPHRASE}</passphrase>
+				</configuration>
 			</plugin>
 
 			<!-- Despliegue a Central (nuevo plugin oficial) -->
