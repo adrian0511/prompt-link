@@ -2,6 +2,8 @@ package io.github.adrian0511.prompt_link.service;
 
 import java.util.List;
 
+import feign.FeignException;
+import io.github.adrian0511.prompt_link.exceptions.AiClientException;
 import org.springframework.stereotype.Service;
 
 import io.github.adrian0511.prompt_link.client.AiClient;
@@ -23,15 +25,29 @@ public class AiService {
     }
 
     public AiResponse generate(String prompt) {
-        OpenRouterRequest request = new OpenRouterRequest();
-        request.setModel(properties.getModel());
-        request.setMessages(List.of(new Message("user", prompt)));
-        request.setMaxTokens(properties.getMaxTokens());
+        try {
+            OpenRouterRequest request = new OpenRouterRequest();
+            request.setModel(properties.getModel());
+            request.setMessages(List.of(new Message("user", prompt)));
+            request.setMaxTokens(properties.getMaxTokens());
 
-        OpenRouterResponse response = aiClient.chatCompletion(request);
-        String content = response.getChoices().get(0).getMessage().getContent();
+            OpenRouterResponse response = aiClient.chatCompletion(request);
+            String content = response.getChoices().get(0).getMessage().getContent();
 
-        return new AiResponse(content);
+            return new AiResponse(content);
+        }catch (FeignException e){
+            String errorBody=e.contentUTF8();
+            int statusCode = e.status();
+            throw new AiClientException(
+                    "Error en comunicación con IA: "+e.getMessage(),
+                    statusCode,
+                    errorBody
+            );
+        }catch (Exception e){
+            throw new AiClientException("Error inesperado: "+e.getMessage(),
+                    -1,
+                    null);
+        }
     }
 
 }
