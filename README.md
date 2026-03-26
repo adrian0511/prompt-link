@@ -11,7 +11,7 @@
 - **Integración con OpenRouter** – Soporta todos los modelos disponibles.
 - **Auto‑configuración Spring Boot** – Solo añade la dependencia; **no necesitas `@EnableFeignClients`**.
 - **Cliente Feign** – Código declarativo y fácil de probar.
-- **Manejo de errores personalizado** – Lanza excepción `AiClientException` con detalles del error.
+- **Manejo de errores unificado** – `AiClientException` cubre tanto errores HTTP (4xx/5xx) como errores de red (timeouts, DNS, etc.) con `statusCode = -1` para los de red.
 - **Flexibilidad** – Permite sobrescribir beans y propiedades según necesidades.
 
 ## 📋 Requisitos
@@ -24,20 +24,18 @@
 
 ### Maven
 
-Agrega la dependencia a tu `pom.xml`:
-
 ```xml
 <dependency>
     <groupId>io.github.adrian0511</groupId>
     <artifactId>prompt-link</artifactId>
-    <version>1.0.1</version>
+    <version>1.0.2</version>
 </dependency>
 ```
 
 Gradle
 
 ```groovy
-implementation 'io.github.adrian0511:prompt-link:1.0.1'
+implementation 'io.github.adrian0511:prompt-link:1.0.2'
 ```
 
 ⚙️ Configuración
@@ -78,7 +76,10 @@ public class ChatController {
             return response.getContent();
         } catch (AiClientException e) {
             // Maneja el error (log, retorno amigable, etc.)
-            return "Error: " + e.getMessage();
+            if (e.getStatusCode() == -1) {
+                return "Error de red: " + e.getMessage();
+            }
+            return "Error HTTP " + e.getStatusCode() + ": " + e.getErrorBody();
         }
     }
 }
@@ -86,7 +87,7 @@ public class ChatController {
 
 🧩 Manejo de errores
 
-La librería lanza AiClientException cuando ocurre un error en la llamada a OpenRouter (códigos 4xx/5xx, timeouts, etc.). Puedes capturarla globalmente con @ControllerAdvice:
+La librería lanza AiClientException cuando ocurre un error en la llamada a OpenRouter. Puedes capturarla globalmente con @ControllerAdvice:
 
 ```java
 @RestControllerAdvice
@@ -95,7 +96,8 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(AiClientException.class)
     public ResponseEntity<ErrorResponse> handleAiClientException(AiClientException ex) {
         ErrorResponse error = new ErrorResponse(ex.getMessage(), ex.getStatusCode());
-        return ResponseEntity.status(ex.getStatusCode()).body(error);
+        return ResponseEntity.status(ex.getStatusCode() == -1 ? 503 : ex.getStatusCode())
+                             .body(error);
     }
 }
 ```
@@ -139,13 +141,3 @@ Las contribuciones son bienvenidas. Por favor, abre un issue o un pull request e
 ---
 
 ¡Gracias por usar Prompt Link! 🚀
-
-```
-
----
-
-## 📌 Cambios destacados respecto a la versión 1.0.0
-
-- **Se eliminó la necesidad de `@EnableFeignClients`**: la auto‑configuración ahora lo gestiona internamente.
-- **Corrección del archivo `AutoConfiguration.imports`** para que apunte al paquete correcto (`io.github.adrian0511.prompt_link.config.AiClientAutoConfiguration`).
-- **Se actualizó el `groupId` a `io.github.adrian0511`** y la versión a `1.0.1`.
