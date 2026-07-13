@@ -109,6 +109,13 @@ public class AiService {
             // acabarían pareciendo errores de red.
             throw e;
         } catch (FeignException e) {
+            // Un error de la API que AiErrorDecoder marcó como reintentable (429, 5xx) llega aquí
+            // envuelto en una RetryableException, ya sea porque los reintentos están desactivados o
+            // porque se agotaron. Dentro sigue estando la excepción tipada, con su status y su
+            // cuerpo: hay que devolver esa, no la envoltura de Feign, que perdería el cuerpo.
+            if (e.getCause() instanceof AiClientException error) {
+                throw error;
+            }
             // La petición no llegó a completarse: timeout, DNS, conexión rechazada. Feign lo
             // señaliza con una RetryableException, que es una FeignException con status() == -1.
             throw new AiClientException(

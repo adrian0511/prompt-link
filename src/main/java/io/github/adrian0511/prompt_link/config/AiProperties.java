@@ -41,6 +41,68 @@ public class AiProperties {
     /** Tiempo máximo de espera de la respuesta. Los modelos grandes pueden tardar. */
     private Duration readTimeout = Duration.ofSeconds(60);
 
+    /** Reintentos ante rate limits y errores del servidor. Desactivados por defecto. */
+    private final Retry retry = new Retry();
+
+    /**
+     * Política de reintentos ante 429 (rate limit) y 5xx.
+     *
+     * <p>Viene desactivada a propósito: generar una respuesta no es una operación idempotente. Si
+     * la petición se pierde <em>después</em> de que el modelo la haya procesado, reintentar vuelve
+     * a generarla y te la cobran dos veces. Actívala si prefieres tolerar ese riesgo a cambio de
+     * aguantar los rate limits, que en OpenRouter son frecuentes.
+     */
+    public static class Retry {
+
+        /** Si está activada, se reintentan los 429 y los 5xx. */
+        private boolean enabled = false;
+
+        /** Número total de intentos, incluido el primero. */
+        private int maxAttempts = 3;
+
+        /** Espera inicial entre intentos; crece exponencialmente hasta max-period. */
+        private Duration period = Duration.ofMillis(500);
+
+        /** Tope de la espera entre intentos. También limita lo que se respeta de Retry-After. */
+        private Duration maxPeriod = Duration.ofSeconds(5);
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public int getMaxAttempts() {
+            return maxAttempts;
+        }
+
+        public void setMaxAttempts(int maxAttempts) {
+            this.maxAttempts = maxAttempts;
+        }
+
+        public Duration getPeriod() {
+            return period;
+        }
+
+        public void setPeriod(Duration period) {
+            this.period = period;
+        }
+
+        public Duration getMaxPeriod() {
+            return maxPeriod;
+        }
+
+        public void setMaxPeriod(Duration maxPeriod) {
+            this.maxPeriod = maxPeriod;
+        }
+    }
+
+    public Retry getRetry() {
+        return retry;
+    }
+
     public String getApiKey() {
         return apiKey;
     }

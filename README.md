@@ -61,9 +61,24 @@ ai:
   title: Spring AI Client           # Nombre de tu app (cabecera X-Title)
   connect-timeout: 10s              # Timeout de conexión
   read-timeout: 60s                 # Timeout de lectura; súbelo con modelos grandes
+  retry:
+    enabled: false                  # Reintentos ante 429 y 5xx (ver más abajo)
+    max-attempts: 3                 # Intentos totales, incluido el primero
+    period: 500ms                   # Espera inicial; crece exponencialmente
+    max-period: 5s                  # Tope de la espera entre intentos
 ```
 
 Solo `api-key` es obligatoria; el resto tiene los valores por defecto de arriba. Mantén tu clave en variables de entorno o en un secreto de tu plataforma.
+
+### 🔁 Reintentos
+
+Vienen **desactivados a propósito**. Generar una respuesta no es una operación idempotente: si la petición se pierde *después* de que el modelo la haya procesado (por ejemplo, un timeout de lectura), reintentarla la genera otra vez y **te la cobran dos veces**.
+
+Actívalos con `ai.retry.enabled: true` si prefieres asumir ese riesgo a cambio de aguantar los rate limits, que en OpenRouter son frecuentes. Cuando están activos:
+
+- Se reintentan los **429** (la petición ni llegó a procesarse, así que reintentarla es seguro) y los **5xx**, con backoff exponencial y respetando la cabecera `Retry-After` si OpenRouter la envía.
+- **No** se reintentan los 401, 402, 404 ni el resto de errores de la petición: repetirlos daría exactamente el mismo error.
+- Si se agotan los intentos, recibes la misma `AiClientException` que recibirías sin reintentos, con su `statusCode` y su `errorBody` intactos.
 
 ## 📝 Uso básico
 

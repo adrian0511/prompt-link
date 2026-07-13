@@ -7,6 +7,7 @@ import org.springframework.context.annotation.Bean;
 
 import feign.Request;
 import feign.RequestInterceptor;
+import feign.Retryer;
 import feign.codec.ErrorDecoder;
 import io.github.adrian0511.prompt_link.exceptions.AiErrorDecoder;
 
@@ -36,6 +37,24 @@ public class AiFeignConfiguration {
     @ConditionalOnMissingBean
     ErrorDecoder aiErrorDecoder() {
         return new AiErrorDecoder();
+    }
+
+    /**
+     * Feign no reintenta nada por defecto, y así se queda salvo que lo actives con
+     * {@code ai.retry.enabled}. Cuando está activo, reintenta lo que {@code AiErrorDecoder} marca
+     * como reintentable (429 y 5xx) y los fallos de red, con backoff exponencial.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    Retryer aiRetryer(AiProperties properties) {
+        AiProperties.Retry retry = properties.getRetry();
+        if (!retry.isEnabled()) {
+            return Retryer.NEVER_RETRY;
+        }
+        return new Retryer.Default(
+                retry.getPeriod().toMillis(),
+                retry.getMaxPeriod().toMillis(),
+                retry.getMaxAttempts());
     }
 
     @Bean

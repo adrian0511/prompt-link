@@ -38,6 +38,9 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 - Conversaciones multi-turno y system prompt: `generate(List<Message>)` y
   `generate(String systemPrompt, String userPrompt)`.
+- Reintentos opcionales con backoff exponencial ante rate limits (429) y errores del servidor (5xx),
+  respetando la cabecera `Retry-After`. Vienen **desactivados** (`ai.retry.enabled`): generar una
+  respuesta no es idempotente y un reintento tras un timeout puede acabar cobrándose dos veces.
 - Timeouts configurables (`ai.connect-timeout`, `ai.read-timeout`) con valores por defecto pensados
   para LLM (10s y 60s).
 - Propiedades `ai.temperature` y `ai.title`.
