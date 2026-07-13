@@ -12,7 +12,7 @@
 
 	<groupId>io.github.adrian0511</groupId>
 	<artifactId>prompt-link</artifactId>
-	<version>1.0.2</version>
+	<version>1.0.3</version>
 	<name>prompt-link</name>
 	<description>Cliente Java para consumir IA generativa a través de OpenRouter con auto-configuración Spring Boot</description>
 	<url>https://github.com/adrian0511/prompt-link</url>
@@ -42,13 +42,16 @@
 	<properties>
 		<java.version>21</java.version>
 		<spring-cloud.version>2025.1.1</spring-cloud.version>
+		<!-- Se sobrescribe con -Dgpg.keyname=... al firmar la release -->
+		<gpg.keyname>F14E0E1014A07FDFA757FB8B06E07DCE9EAB402F</gpg.keyname>
 	</properties>
+
 	<dependencies>
 
+		<!-- La versión la gestiona el BOM de Spring Boot: no fijarla aquí. -->
 		<dependency>
 			<groupId>com.fasterxml.jackson.core</groupId>
 			<artifactId>jackson-databind</artifactId>
-			<version>2.19.0</version>
 		</dependency>
 
 		<dependency>
@@ -59,6 +62,12 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-test</artifactId>
+			<scope>test</scope>
 		</dependency>
 	</dependencies>
 	<dependencyManagement>
@@ -87,70 +96,96 @@
 					</annotationProcessorPaths>
 				</configuration>
 			</plugin>
-
-			<!-- Fuentes -->
-			<plugin>
-				<groupId>org.apache.maven.plugins</groupId>
-				<artifactId>maven-source-plugin</artifactId>
-				<version>3.4.0</version>
-				<executions>
-					<execution>
-						<id>attach-sources</id>
-						<goals>
-							<goal>jar-no-fork</goal>
-						</goals>
-					</execution>
-				</executions>
-			</plugin>
-
-			<!-- Javadoc -->
-			<plugin>
-				<groupId>org.apache.maven.plugins</groupId>
-				<artifactId>maven-javadoc-plugin</artifactId>
-				<version>3.12.0</version>
-				<executions>
-					<execution>
-						<id>attach-javadocs</id>
-						<goals>
-							<goal>jar</goal>
-						</goals>
-					</execution>
-				</executions>
-			</plugin>
-
-			<!-- Firma GPG -->
-			<plugin>
-				<groupId>org.apache.maven.plugins</groupId>
-				<artifactId>maven-gpg-plugin</artifactId>
-				<version>3.2.7</version>
-				<executions>
-					<execution>
-						<id>sign-artifacts</id>
-						<phase>verify</phase>
-						<goals>
-							<goal>sign</goal>
-						</goals>
-					</execution>
-				</executions>
-				<configuration>
-					<executable>C:\Program Files\GnuPG\bin\gpg.exe</executable>
-					<keyname>F14E0E1014A07FDFA757FB8B06E07DCE9EAB402F</keyname>
-					<passphrase>${env.GPG_PASSPHRASE}</passphrase>
-				</configuration>
-			</plugin>
-
-			<!-- Despliegue a Central (nuevo plugin oficial) -->
-			<plugin>
-				<groupId>org.sonatype.central</groupId>
-				<artifactId>central-publishing-maven-plugin</artifactId>
-				<version>0.8.0</version>
-				<extensions>true</extensions>
-				<configuration>
-					<publishingServerId>central</publishingServerId>
-					<tokenAuth>true</tokenAuth>
-				</configuration>
-			</plugin>
 		</plugins>
 	</build>
+
+	<profiles>
+		<!--
+			Publicación en Maven Central. Aislado en un profile porque la firma GPG y la generación
+			de javadoc no deben ejecutarse en un `mvn clean install` normal ni en CI: romperían el
+			build en cualquier máquina sin la clave privada.
+
+			Uso: mvn deploy -Prelease -Dgpg.passphrase=...
+		-->
+		<profile>
+			<id>release</id>
+			<build>
+				<plugins>
+					<!-- Fuentes -->
+					<plugin>
+						<groupId>org.apache.maven.plugins</groupId>
+						<artifactId>maven-source-plugin</artifactId>
+						<version>3.4.0</version>
+						<executions>
+							<execution>
+								<id>attach-sources</id>
+								<goals>
+									<goal>jar-no-fork</goal>
+								</goals>
+							</execution>
+						</executions>
+					</plugin>
+
+					<!-- Javadoc -->
+					<plugin>
+						<groupId>org.apache.maven.plugins</groupId>
+						<artifactId>maven-javadoc-plugin</artifactId>
+						<version>3.12.0</version>
+						<configuration>
+							<!--
+								Valida la sintaxis, el HTML y las referencias del javadoc, pero no
+								exige comentar getters, setters ni constructores triviales: rellenar
+								eso solo añadiría ruido para el que lee.
+							-->
+							<doclint>all,-missing</doclint>
+						</configuration>
+						<executions>
+							<execution>
+								<id>attach-javadocs</id>
+								<goals>
+									<goal>jar</goal>
+								</goals>
+							</execution>
+						</executions>
+					</plugin>
+
+					<!-- Firma GPG. El ejecutable se resuelve del PATH: no hardcodear rutas. -->
+					<plugin>
+						<groupId>org.apache.maven.plugins</groupId>
+						<artifactId>maven-gpg-plugin</artifactId>
+						<version>3.2.7</version>
+						<executions>
+							<execution>
+								<id>sign-artifacts</id>
+								<phase>verify</phase>
+								<goals>
+									<goal>sign</goal>
+								</goals>
+							</execution>
+						</executions>
+						<configuration>
+							<keyname>${gpg.keyname}</keyname>
+							<gpgArguments>
+								<arg>--pinentry-mode</arg>
+								<arg>loopback</arg>
+							</gpgArguments>
+						</configuration>
+					</plugin>
+
+					<!-- Despliegue a Central -->
+					<plugin>
+						<groupId>org.sonatype.central</groupId>
+						<artifactId>central-publishing-maven-plugin</artifactId>
+						<version>0.8.0</version>
+						<extensions>true</extensions>
+						<configuration>
+							<publishingServerId>central</publishingServerId>
+							<tokenAuth>true</tokenAuth>
+						</configuration>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
+	</profiles>
 
 </project>
