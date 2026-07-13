@@ -17,6 +17,11 @@ import feign.codec.ErrorDecoder;
 import io.github.adrian0511.prompt_link.client.AiClient;
 import io.github.adrian0511.prompt_link.service.AiService;
 
+/**
+ * Comprueba qué beans acaban en el contexto principal de la aplicación que usa la librería: que
+ * estén el cliente y el servicio, que las propiedades se enlacen, que el servicio se pueda
+ * sobrescribir y, sobre todo, que los beans de Feign <em>no</em> estén ahí.
+ */
 class AiClientAutoConfigurationTest {
 
     private final ApplicationContextRunner runner = new ApplicationContextRunner()

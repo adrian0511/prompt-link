@@ -13,6 +13,10 @@ import feign.Request;
 import feign.Response;
 import feign.RetryableException;
 
+/**
+ * Comprueba la traducción de las respuestas de error de OpenRouter: que el status y el cuerpo
+ * sobrevivan, y que solo se marque como reintentable lo que de verdad tiene sentido reintentar.
+ */
 class AiErrorDecoderTest {
 
     private final AiErrorDecoder decoder = new AiErrorDecoder();

@@ -26,6 +26,13 @@ import io.github.adrian0511.prompt_link.dto.OpenRouterRequest;
 import io.github.adrian0511.prompt_link.dto.OpenRouterResponse;
 import io.github.adrian0511.prompt_link.exceptions.AiClientException;
 
+/**
+ * Cubre la lógica del servicio con el cliente mockeado: cómo se construye la petición a partir de
+ * las propiedades y, sobre todo, cómo se traduce cada tipo de fallo.
+ *
+ * <p>El caso importante es {@link #preservaElStatusYElCuerpoDeLosErroresHttp()}: fija que un error
+ * de la API llegue con su status real y no degradado a error de red.
+ */
 class AiServiceTest {
 
     private AiClient aiClient;
