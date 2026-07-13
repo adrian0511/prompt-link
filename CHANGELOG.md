@@ -5,6 +5,26 @@ Todos los cambios relevantes de este proyecto se documentan aquí.
 El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
 [Versionado Semántico](https://semver.org/lang/es/).
 
+## [1.1.0] - 2026-07-13
+
+### Añadido
+
+- **Streaming de tokens.** `ReactiveAiService.stream(...)` devuelve un `Flux<String>` que emite el
+  texto según el modelo lo genera, en lugar de esperar a la respuesta completa. Se autoconfigura
+  solo si WebFlux está en el classpath: WebFlux es una dependencia **opcional**, así que las
+  aplicaciones MVC no arrastran reactor-netty.
+- `ReactiveAiService.generate(...)` devuelve `Mono<AiResponse>` para las aplicaciones reactivas que
+  no necesiten streaming.
+- Los errores del camino reactivo son los mismos que los del bloqueante: `AiClientException` con el
+  mismo significado en su `statusCode`. Cambiar de uno a otro no obliga a reescribir el manejo de
+  errores.
+
+### Corregido
+
+- Los DTOs de respuesta ignoran explícitamente las propiedades desconocidas. Antes la
+  deserialización solo funcionaba porque Spring Boot desactiva `FAIL_ON_UNKNOWN_PROPERTIES` por
+  defecto: una aplicación que lo reactivara, o un campo nuevo en la API de OpenRouter, la rompían.
+
 ## [1.0.3] - 2026-07-13
 
 ### Seguridad
@@ -58,5 +78,6 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
 
 - Manejo de errores unificado en `AiClientException`.
 
+[1.1.0]: https://github.com/adrian0511/prompt-link/releases/tag/v1.1.0
 [1.0.3]: https://github.com/adrian0511/prompt-link/releases/tag/v1.0.3
 [1.0.2]: https://github.com/adrian0511/prompt-link/releases/tag/v1.0.2
