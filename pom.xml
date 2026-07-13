@@ -43,7 +43,7 @@
 		<java.version>21</java.version>
 		<spring-cloud.version>2025.1.1</spring-cloud.version>
 		<!-- Se sobrescribe con -Dgpg.keyname=... al firmar la release -->
-		<gpg.keyname>F14E0E1014A07FDFA757FB8B06E07DCE9EAB402F</gpg.keyname>
+		<gpg.keyname>72C3A6ED78037287AB7220405F87E1113C85D94D</gpg.keyname>
 	</properties>
 
 	<dependencies>
