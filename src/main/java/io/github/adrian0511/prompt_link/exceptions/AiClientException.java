@@ -1,39 +1,40 @@
 package io.github.adrian0511.prompt_link.exceptions;
 
 /**
- * Único fallo que la librería propaga al llamante. El {@link #getStatusCode() statusCode} dice qué
- * ocurrió:
+ * The only failure this library propagates to the caller. The {@link #getStatusCode() statusCode}
+ * tells you what went wrong:
  *
  * <ul>
- *   <li><b>mayor que 0</b> – error HTTP de la API (401, 402, 429, 5xx…). {@link #getErrorBody()}
- *       trae el cuerpo de la respuesta, que suele explicar el motivo.
- *   <li>{@link #NETWORK_ERROR} – la llamada no llegó a completarse.
- *   <li>{@link #INVALID_RESPONSE} – la API respondió correctamente pero sin contenido usable.
- *   <li>{@link #CONFIGURATION_ERROR} – falta configuración obligatoria.
+ *   <li><b>greater than 0</b> – an HTTP error from the API (401, 402, 429, 5xx…).
+ *       {@link #getErrorBody()} holds the response body, which usually explains why.
+ *   <li>{@link #NETWORK_ERROR} – the call never completed.
+ *   <li>{@link #INVALID_RESPONSE} – the API answered successfully but with nothing usable.
+ *   <li>{@link #CONFIGURATION_ERROR} – required configuration is missing.
+ *   <li>{@link #STREAM_ERROR} – the API failed midway through a stream.
  * </ul>
  *
- * <p>La distinción importa a la hora de reaccionar: un error HTTP suele ser culpa de la petición o
- * de la cuenta (clave inválida, sin créditos, rate limit) y repetir la llamada no ayuda, mientras
- * que un {@link #NETWORK_ERROR} sí es candidato a reintento.
+ * <p>The distinction matters when deciding how to react: an HTTP error is usually the request's or
+ * the account's fault (bad key, no credits, rate limit) and repeating the call will not help, while
+ * a {@link #NETWORK_ERROR} is a reasonable candidate for a retry.
  */
 public class AiClientException extends RuntimeException {
 
-    /** La llamada no llegó a completarse: timeout, DNS, conexión rechazada. */
+    /** The call never completed: timeout, DNS failure, connection refused. */
     public static final int NETWORK_ERROR = -1;
 
-    /** La API respondió con éxito pero el cuerpo no es utilizable: sin choices o sin contenido. */
+    /** The API answered successfully but the body is unusable: no choices, or no content. */
     public static final int INVALID_RESPONSE = -2;
 
-    /** La librería no está bien configurada: falta {@code ai.api-key}. */
+    /** The library is misconfigured: {@code ai.api-key} is missing. */
     public static final int CONFIGURATION_ERROR = -3;
 
     /**
-     * La API falló <em>a mitad de un stream</em>, después de haber respondido 200, y sin dar un
-     * código HTTP numérico (manda cosas como {@code "server_error"}).
+     * The API failed <em>midway through a stream</em>, after having already answered 200, and
+     * without giving a numeric HTTP code (it sends things like {@code "server_error"}).
      *
-     * <p>Se trata como transitorio: si el fallo llega antes del primer token, la llamada se
-     * reintenta. Cuando OpenRouter sí da un código numérico se usa ese, con su significado normal:
-     * un 402 a mitad de stream sigue sin reintentarse.
+     * <p>Treated as transient: if the failure arrives before the first token, the call is retried.
+     * When OpenRouter does give a numeric code, that code is used with its usual meaning, so a 402
+     * midway through a stream is still not retried.
      */
     public static final int STREAM_ERROR = -4;
 
@@ -51,22 +52,22 @@ public class AiClientException extends RuntimeException {
     }
 
     /**
-     * El código HTTP devuelto por la API, o una de las constantes negativas de esta clase si el
-     * fallo ocurrió antes de tener una respuesta.
+     * The HTTP status returned by the API, or one of the negative constants of this class when the
+     * failure happened before there was a response.
      */
     public int getStatusCode() {
         return this.statusCode;
     }
 
     /**
-     * El cuerpo crudo de la respuesta de error de la API, o {@code null} si el fallo no llegó a
-     * producir una.
+     * The raw body of the API's error response, or {@code null} when the failure never produced
+     * one.
      */
     public String getErrorBody() {
         return this.errorBody;
     }
 
-    /** {@code true} si el fallo viene de una respuesta HTTP de error de la API (4xx/5xx). */
+    /** {@code true} if the failure came from an HTTP error response of the API (4xx/5xx). */
     public boolean isHttpError() {
         return this.statusCode > 0;
     }

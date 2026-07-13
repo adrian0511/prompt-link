@@ -1,100 +1,100 @@
 # Changelog
 
-Todos los cambios relevantes de este proyecto se documentan aquí.
+All notable changes to this project are documented here.
 
-El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y el proyecto usa
-[Versionado Semántico](https://semver.org/lang/es/).
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
+[Semantic Versioning](https://semver.org/).
 
 ## [1.1.0] - 2026-07-13
 
-### Añadido
+### Added
 
-- **Streaming de tokens.** `ReactiveAiService.stream(...)` devuelve un `Flux<String>` que emite el
-  texto según el modelo lo genera, en lugar de esperar a la respuesta completa. Se autoconfigura
-  solo si WebFlux está en el classpath: WebFlux es una dependencia **opcional**, así que las
-  aplicaciones MVC no arrastran reactor-netty.
-- `ReactiveAiService.generate(...)` devuelve `Mono<AiResponse>` para las aplicaciones reactivas que
-  no necesiten streaming.
-- Los errores del camino reactivo son los mismos que los del bloqueante: `AiClientException` con el
-  mismo significado en su `statusCode`. Cambiar de uno a otro no obliga a reescribir el manejo de
-  errores.
+- **Token streaming.** `ReactiveAiService.stream(...)` returns a `Flux<String>` that emits text as the
+  model generates it, instead of waiting for the whole answer. It auto-configures only when WebFlux is
+  on the classpath: WebFlux is an **optional** dependency, so MVC applications never drag in
+  reactor-netty.
+- `ReactiveAiService.generate(...)` returns a `Mono<AiResponse>` for reactive applications that do not
+  need streaming.
+- Errors on the reactive path are the same as on the blocking one: `AiClientException`, with the same
+  meaning in its `statusCode`. Moving from one to the other does not force you to rewrite error
+  handling.
+- Timeouts (`ai.connect-timeout`, `ai.read-timeout`) and retries (`ai.retry.*`) now apply to the
+  reactive path as well. `read-timeout` is an **inactivity** timeout, not a total one: a long answer is
+  not cut off while text keeps arriving.
+- In `stream(...)` retries only happen before the first token: once text has been emitted, retrying
+  would resend the answer from the beginning and the user would see it duplicated.
+- New constant `AiClientException.STREAM_ERROR` for mid-stream failures with no numeric HTTP code.
+  They are transient, so they are retried when they arrive before the first token. When OpenRouter does
+  give a numeric code, its meaning is honoured: a 402 is not retried.
+- The whole codebase, its Javadoc and its documentation are now in English.
 
-- Los timeouts (`ai.connect-timeout`, `ai.read-timeout`) y los reintentos (`ai.retry.*`) se aplican
-  también al camino reactivo. En streaming, el `read-timeout` es un timeout de **inactividad**, no
-  total: una respuesta larga no se corta mientras siga llegando texto.
-- En `stream(...)` solo se reintenta antes del primer token: una vez emitido texto, reintentar
-  reenviaría la respuesta desde el principio y el usuario la vería duplicada.
-- Nueva constante `AiClientException.STREAM_ERROR` para los fallos a mitad de stream sin código HTTP
-  numérico. Son transitorios, así que se reintentan si llegan antes del primer token. Cuando
-  OpenRouter sí da un código numérico se respeta su significado: un 402 no se reintenta.
-- `ai.retry.max-attempts` pasa a ser **2** por defecto (antes 3). Cada intento puede agotar el
-  `read-timeout`, así que cada intento de más multiplica lo que el usuario espera antes de ver el
-  error.
+### Changed
 
-### Corregido
+- `ai.retry.max-attempts` now defaults to **2** (was 3). Each attempt can exhaust the `read-timeout`, so
+  every extra attempt multiplies how long the user waits before seeing the error.
 
-- **Los errores que OpenRouter manda a mitad del stream ya no se tragan en silencio.** La API puede
-  fallar después de haber respondido 200 y de haber emitido tokens, enviando el fallo en un campo
-  `error` dentro de un evento SSE que además trae un `choices` con contenido vacío. Ese evento se
-  parseaba sin protestar, el fragmento vacío se filtraba y el stream terminaba con normalidad: el
-  usuario veía la respuesta cortada a media frase y la aplicación no se enteraba de nada. Ahora se
-  propaga como `AiClientException`.
-- Los DTOs de respuesta ignoran explícitamente las propiedades desconocidas. Antes la
-  deserialización solo funcionaba porque Spring Boot desactiva `FAIL_ON_UNKNOWN_PROPERTIES` por
-  defecto: una aplicación que lo reactivara, o un campo nuevo en la API de OpenRouter, la rompían.
+### Fixed
+
+- **Errors OpenRouter sends mid-stream are no longer swallowed in silence.** The API can fail after
+  answering 200 and emitting tokens, sending the failure in an `error` field of an SSE event that also
+  carries a `choices` entry with empty content. That event used to parse without complaint, the empty
+  fragment was filtered out and the stream ended normally: the user saw their answer cut off
+  mid-sentence and the application never knew. It now surfaces as an `AiClientException`.
+- Response DTOs now ignore unknown properties explicitly. Deserialization used to work only because
+  Spring Boot disables `FAIL_ON_UNKNOWN_PROPERTIES` by default: an application re-enabling it, or a new
+  field in OpenRouter's API, would break it.
 
 ## [1.0.3] - 2026-07-13
 
-### Seguridad
+### Security
 
-- **La API key de OpenRouter se filtraba a otros servicios.** El `RequestInterceptor` que añade la
-  cabecera `Authorization` se registraba en el contexto principal de la aplicación. Feign resuelve
-  los interceptores mirando también los contextos ancestros, así que se aplicaba a **todos** los
-  clientes Feign de la aplicación que usara la librería: cualquier otro servicio al que esa
-  aplicación llamase por Feign recibía la cabecera `Authorization: Bearer <tu-api-key>`.
+- **The OpenRouter API key leaked to other services.** The `RequestInterceptor` adding the
+  `Authorization` header was registered in the application's main context. Feign resolves interceptors
+  by also looking at ancestor contexts, so it applied to **every** Feign client of the application
+  using this library: any other service that application called over Feign received
+  `Authorization: Bearer <your-api-key>`.
 
-  Ahora el interceptor y el error decoder viven en `AiFeignConfiguration`, que Spring Cloud carga
-  únicamente en el contexto del cliente de OpenRouter.
+  The interceptor and the error decoder now live in `AiFeignConfiguration`, which Spring Cloud loads
+  only in the OpenRouter client's context.
 
-  **Si usas la 1.0.2 y tu aplicación tiene otros clientes Feign, actualiza y rota tu API key.**
+  **If you are on 1.0.2 and your application has other Feign clients, upgrade and rotate your API key.**
 
-### Corregido
+### Fixed
 
-- Todos los errores HTTP llegaban con `statusCode = -1` y `errorBody = null`, indistinguibles de un
-  error de red. Ahora `AiClientException` conserva el código y el cuerpo reales de la respuesta.
-- Una respuesta 200 sin `choices` provocaba un `IndexOutOfBoundsException` enmascarado como error
-  inesperado. Ahora se comunica como `INVALID_RESPONSE`.
-- Si faltaba `ai.api-key`, la cabecera se enviaba como `Bearer null` y OpenRouter devolvía un 401 sin
-  explicación. Ahora falla con `CONFIGURATION_ERROR` y un mensaje claro.
-- `AiClientException` conserva la causa raíz, que antes se perdía por completo.
-- `mvn clean install` fallaba fuera de Windows: el plugin GPG tenía la ruta del ejecutable
-  hardcodeada y se ejecutaba en la fase `verify`. La firma vive ahora en el profile `release`.
-- La librería incluía un `application.properties` en su jar, que podía interferir con el de la
-  aplicación que la usara.
+- Every HTTP error arrived with `statusCode = -1` and `errorBody = null`, indistinguishable from a
+  network error. `AiClientException` now preserves the real status and body of the response.
+- A 200 response with no `choices` caused an `IndexOutOfBoundsException` masked as an unexpected error.
+  It now surfaces as `INVALID_RESPONSE`.
+- With `ai.api-key` missing, the header was sent as `Bearer null` and OpenRouter answered an
+  unexplained 401. It now fails with `CONFIGURATION_ERROR` and a clear message.
+- `AiClientException` preserves the root cause, which used to be lost entirely.
+- `mvn clean install` failed outside Windows: the GPG plugin had the executable path hardcoded and ran
+  in the `verify` phase. Signing now lives in the `release` profile.
+- The library shipped an `application.properties` inside its jar, which could interfere with the one in
+  the consuming application.
 
-### Añadido
+### Added
 
-- Conversaciones multi-turno y system prompt: `generate(List<Message>)` y
+- Multi-turn conversations and system prompt: `generate(List<Message>)` and
   `generate(String systemPrompt, String userPrompt)`.
-- Reintentos opcionales con backoff exponencial ante rate limits (429) y errores del servidor (5xx),
-  respetando la cabecera `Retry-After`. Vienen **desactivados** (`ai.retry.enabled`): generar una
-  respuesta no es idempotente y un reintento tras un timeout puede acabar cobrándose dos veces.
-- Timeouts configurables (`ai.connect-timeout`, `ai.read-timeout`) con valores por defecto pensados
-  para LLM (10s y 60s).
-- Propiedades `ai.temperature` y `ai.title`.
-- Constantes `NETWORK_ERROR`, `INVALID_RESPONSE` y `CONFIGURATION_ERROR`, y el método
-  `isHttpError()`, para distinguir los tipos de fallo sin comparar números mágicos.
-- Suite de tests (incluida una que comprueba, contra un servidor HTTP real, que la API key no se
-  filtra a otros clientes Feign) e integración continua.
+- Optional retries with exponential backoff on rate limits (429) and server errors (5xx), honouring the
+  `Retry-After` header. They are **disabled** by default (`ai.retry.enabled`): generating an answer is
+  not idempotent, and a retry after a timeout can end up billed twice.
+- Configurable timeouts (`ai.connect-timeout`, `ai.read-timeout`) with LLM-friendly defaults.
+- `ai.temperature` and `ai.title` properties.
+- `NETWORK_ERROR`, `INVALID_RESPONSE` and `CONFIGURATION_ERROR` constants, plus `isHttpError()`, to tell
+  failure kinds apart without comparing magic numbers.
+- A test suite (including one that checks, against a real HTTP server, that the API key does not leak to
+  other Feign clients) and continuous integration.
 
-### Cambiado
+### Changed
 
-- Requisitos actualizados en el README: el proyecto exige Java 21 y Spring Boot 4.0.x, no Java 17 y
-  Boot 3.2.x como se documentaba.
+- Requirements corrected in the README: the project needs Java 21 and Spring Boot 4.0.x, not Java 17 and
+  Boot 3.2.x as documented.
 
 ## [1.0.2] - 2026
 
-- Manejo de errores unificado en `AiClientException`.
+- Unified error handling in `AiClientException`.
 
 [1.1.0]: https://github.com/adrian0511/prompt-link/releases/tag/v1.1.0
 [1.0.3]: https://github.com/adrian0511/prompt-link/releases/tag/v1.0.3

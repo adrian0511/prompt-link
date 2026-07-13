@@ -17,17 +17,17 @@ import io.netty.channel.ChannelOption;
 import reactor.netty.http.client.HttpClient;
 
 /**
- * Registra {@link ReactiveAiService} en aplicaciones que tengan WebFlux en el classpath.
+ * Registers {@link ReactiveAiService} in applications that have WebFlux on the classpath.
  *
- * <p>WebFlux es una dependencia opcional de la librería: quien la use en una aplicación MVC no
- * arrastra reactor-netty y esta auto-configuración sencillamente no se activa. Para habilitar el
- * streaming basta con que el consumidor añada {@code spring-boot-starter-webflux}.
+ * <p>WebFlux is an optional dependency of this library: an application on MVC does not drag in
+ * reactor-netty and this auto-configuration simply never activates. To enable streaming, the
+ * consumer only has to add {@code spring-boot-starter-webflux}.
  *
- * <p>El {@link WebClient} se construye <strong>solo para esta librería</strong> y no se expone como
- * bean. Es deliberado, y por el mismo motivo por el que la configuración de Feign vive aparte: si
- * la cabecera {@code Authorization} se añadiera al {@code WebClient.Builder} de la aplicación, o si
- * se publicase aquí un builder global, la API key de OpenRouter viajaría a cualquier otro servicio
- * que la aplicación llamase con WebClient.
+ * <p>The {@link WebClient} is built <strong>for this library alone</strong> and is not exposed as a
+ * bean. That is deliberate, and for the same reason the Feign configuration lives apart: if the
+ * Authorization header were added to the application's own {@code WebClient.Builder}, or if a global
+ * builder were published here, the OpenRouter API key would travel to every other service the
+ * application called with WebClient.
  */
 @AutoConfiguration
 @ConditionalOnClass(WebClient.class)
@@ -41,10 +41,9 @@ public class ReactiveAiAutoConfiguration {
             ObjectProvider<WebClient.Builder> builders,
             ObjectProvider<ObjectMapper> objectMappers) {
 
-        // Se parte del builder de la aplicación si existe (para heredar sus codecs y su
-        // configuración de conexión), pero clonándolo: el bean es prototype, así que la cabecera
-        // Authorization que añadimos a continuación se queda en NUESTRA copia y no toca a los demás
-        // WebClient de la aplicación.
+        // Start from the application's builder when there is one, to inherit its codecs and
+        // connection settings, but clone it: the bean is a prototype, so the Authorization header
+        // added below stays in OUR copy and does not touch the application's other WebClients.
         WebClient.Builder builder = builders.getIfAvailable(WebClient::builder).clone();
 
         WebClient webClient = builder
@@ -60,18 +59,18 @@ public class ReactiveAiAutoConfiguration {
     }
 
     /**
-     * Aplica {@code ai.connect-timeout} y {@code ai.read-timeout} al cliente reactivo.
+     * Applies {@code ai.connect-timeout} and {@code ai.read-timeout} to the reactive client.
      *
-     * <p>Reactor Netty no trae ningún timeout de respuesta por defecto: sin esto, un servidor que
-     * acepta la conexión y luego se queda mudo dejaría el {@code Mono} esperando para siempre. Y era
-     * la peor variante del fallo, porque las dos propiedades existen y están documentadas, así que
-     * quien las configuraba creía que hacían algo.
+     * <p>Reactor Netty ships with no response timeout at all: without this, a server that accepts
+     * the connection and then goes silent would leave the {@code Mono} waiting forever. That was the
+     * worst flavour of the bug, because both properties exist and are documented, so anyone
+     * configuring them believed they did something.
      *
-     * <p>{@code responseTimeout} mide el tiempo <strong>entre lecturas de red</strong>, no el total:
-     * una respuesta larga y legítima que tarde minutos en emitirse no se corta, mientras siga
-     * llegando algo. Es la semántica que necesita el streaming, y además cuenta los keep-alives
-     * ({@code : OPENROUTER PROCESSING}) que OpenRouter envía durante las pausas largas, que a este
-     * nivel sí se ven aunque el decodificador de SSE los descarte después.
+     * <p>{@code responseTimeout} measures the time <strong>between network reads</strong>, not the
+     * total: a long, legitimate answer taking minutes to be emitted is not cut off as long as
+     * something keeps arriving. That is exactly the semantics streaming needs, and it also counts the
+     * keep-alives ({@code : OPENROUTER PROCESSING}) OpenRouter sends during long pauses, which are
+     * visible at this level even though the SSE decoder discards them later.
      */
     private static HttpClient httpClient(AiProperties properties) {
         return HttpClient.create()

@@ -1,12 +1,12 @@
 /**
- * El modelo de errores de la librería.
+ * The library's error model.
  *
- * <p>Todo fallo llega al llamante como una
- * {@link io.github.adrian0511.prompt_link.exceptions.AiClientException}, tanto si viene de una
- * respuesta de error de la API como si la llamada no llegó a completarse. Su {@code statusCode}
- * indica cuál de los dos casos es, y el llamante no necesita conocer ningún tipo de Feign.
+ * <p>Every failure reaches the caller as an
+ * {@link io.github.adrian0511.prompt_link.exceptions.AiClientException}, whether it came from an
+ * error response of the API or from a call that never completed. Its {@code statusCode} tells the two
+ * apart, and callers never need to know any of Feign's types.
  *
- * <p>{@link io.github.adrian0511.prompt_link.exceptions.AiErrorDecoder} es quien hace esa
- * traducción, y además marca los rate limits y los errores del servidor como reintentables.
+ * <p>{@link io.github.adrian0511.prompt_link.exceptions.AiErrorDecoder} performs that translation for
+ * the blocking client, and also marks rate limits and server errors as retryable.
  */
 package io.github.adrian0511.prompt_link.exceptions;

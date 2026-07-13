@@ -12,11 +12,12 @@ import io.github.adrian0511.prompt_link.client.AiClient;
 import io.github.adrian0511.prompt_link.service.AiService;
 
 /**
- * Registra el cliente de OpenRouter y {@link AiService} en la aplicación.
+ * Registers the OpenRouter client and {@link AiService} in the application.
  *
- * <p>Los beans propios de Feign (interceptor, error decoder, timeouts) viven en
- * {@link AiFeignConfiguration}, que Spring Cloud carga solo en el contexto hijo del cliente. Nunca
- * deben declararse aquí: este contexto es el principal y Feign los heredaría en todos los clientes.
+ * <p>Feign's own beans (interceptor, error decoder, timeouts, retries) live in
+ * {@link AiFeignConfiguration}, which Spring Cloud loads only in the client's child context. They
+ * must never be declared here: this is the main context, and Feign would inherit them into every
+ * client of the application.
  */
 @AutoConfiguration
 @ConditionalOnClass(Feign.class)

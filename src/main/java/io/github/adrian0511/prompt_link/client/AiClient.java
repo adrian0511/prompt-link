@@ -9,14 +9,14 @@ import io.github.adrian0511.prompt_link.dto.OpenRouterRequest;
 import io.github.adrian0511.prompt_link.dto.OpenRouterResponse;
 
 /**
- * Cliente HTTP de la API de OpenRouter.
+ * HTTP client for the OpenRouter API.
  *
- * <p>Es un detalle de implementación: normalmente querrás inyectar
- * {@link io.github.adrian0511.prompt_link.service.AiService}, que añade la validación de la
- * configuración, la comprobación de la respuesta y el manejo de errores.
+ * <p>This is an implementation detail: you normally want to inject
+ * {@link io.github.adrian0511.prompt_link.service.AiService}, which adds configuration validation,
+ * response checking and error handling on top.
  *
- * <p>La autenticación, los timeouts y la traducción de errores los aporta
- * {@link AiFeignConfiguration}, que Spring Cloud carga solo en el contexto de este cliente.
+ * <p>Authentication, timeouts and error translation come from {@link AiFeignConfiguration}, which
+ * Spring Cloud loads only in this client's context.
  */
 @FeignClient(name = "openrouter", url = "${ai.url:https://openrouter.ai/api/v1}", configuration = AiFeignConfiguration.class)
 public interface AiClient {

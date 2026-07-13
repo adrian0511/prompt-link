@@ -1,11 +1,11 @@
 /**
- * Los cuerpos de petición y respuesta que se intercambian con OpenRouter.
+ * The request and response bodies exchanged with OpenRouter.
  *
- * <p>{@link io.github.adrian0511.prompt_link.dto.OpenRouterRequest} y
- * {@link io.github.adrian0511.prompt_link.dto.OpenRouterResponse} reflejan el formato de la API tal
- * cual, y solo deberías tocarlos si personalizas el cliente. Del uso normal salen dos tipos:
- * {@link io.github.adrian0511.prompt_link.dto.Message}, con el que construyes una conversación, y
- * {@link io.github.adrian0511.prompt_link.dto.AiResponse}, que aísla al llamante del formato de
- * OpenRouter y solo expone el texto generado.
+ * <p>{@link io.github.adrian0511.prompt_link.dto.OpenRouterRequest} and
+ * {@link io.github.adrian0511.prompt_link.dto.OpenRouterResponse} mirror the API's wire format, and
+ * you should only touch them if you customize the client. Everyday use involves two types:
+ * {@link io.github.adrian0511.prompt_link.dto.Message}, which you build a conversation from, and
+ * {@link io.github.adrian0511.prompt_link.dto.AiResponse}, which shields the caller from OpenRouter's
+ * format and exposes only the generated text.
  */
 package io.github.adrian0511.prompt_link.dto;

@@ -3,6 +3,7 @@ package io.github.adrian0511.prompt_link.service;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
+import java.util.function.Predicate;
 
 import org.springframework.http.MediaType;
 import org.springframework.util.StringUtils;
@@ -23,27 +24,28 @@ import reactor.core.publisher.Mono;
 import reactor.util.retry.Retry;
 
 /**
- * Variante reactiva de {@link AiService}, para aplicaciones WebFlux.
+ * The reactive counterpart of {@link AiService}, for WebFlux applications.
  *
- * <p>Su razón de ser es {@link #stream(String)}: devolver los tokens según el modelo los genera, en
- * lugar de esperar a que termine la respuesta entera. Es lo que hace que un chat se sienta vivo, y
- * es imposible con el cliente bloqueante. {@link #generate(String)} viene de propina, para no
- * obligar a mezclar los dos servicios en una aplicación reactiva.
+ * <p>Its reason to exist is {@link #stream(String)}: emitting tokens as the model generates them,
+ * instead of waiting for the whole answer to be finished. That is what makes a chat feel alive, and
+ * it is impossible with the blocking client. {@link #generate(String)} comes along for the ride, so
+ * that a reactive application does not have to mix both services.
  *
- * <p>Solo se registra si WebFlux está en el classpath. Los errores son exactamente los mismos que
- * los del servicio bloqueante — {@link AiClientException} con el mismo significado en su
- * {@code statusCode} —, de modo que cambiar de uno a otro no obliga a reescribir el manejo de
- * errores.
+ * <p>It is only registered when WebFlux is on the classpath. Errors are exactly the same as in the
+ * blocking service — an {@link AiClientException} whose {@code statusCode} means the same thing — so
+ * moving from one to the other does not force you to rewrite your error handling.
  *
  * <pre>{@code
- * Flux<String> tokens = reactiveAiService.stream("Cuéntame un cuento");
- * Mono<AiResponse> respuesta = reactiveAiService.generate("¿Qué tal?");
+ * Flux<String> tokens = reactiveAiService.stream("Tell me a story");
+ * Mono<AiResponse> answer = reactiveAiService.generate("How are you?");
  * }</pre>
  */
 public class ReactiveAiService {
 
-    /** Evento con el que OpenRouter cierra el stream. No es JSON: hay que filtrarlo antes de parsear. */
-    private static final String FIN_DEL_STREAM = "[DONE]";
+    /** The event OpenRouter closes the stream with. It is not JSON, so it is filtered before parsing. */
+    private static final String END_OF_STREAM = "[DONE]";
+
+    private static final int TOO_MANY_REQUESTS = 429;
 
     private final WebClient webClient;
     private final AiProperties properties;
@@ -56,131 +58,174 @@ public class ReactiveAiService {
     }
 
     /**
-     * Envía un único mensaje de usuario y emite la respuesta completa.
+     * Sends a single user message and emits the complete answer.
      *
-     * @param prompt la pregunta o instrucción para el modelo
-     * @return la respuesta del modelo, o un error {@link AiClientException}
+     * @param prompt the question or instruction for the model
+     * @return the model's answer, or an {@link AiClientException} error signal
      */
     public Mono<AiResponse> generate(String prompt) {
         return generate(List.of(Message.user(prompt)));
     }
 
     /**
-     * Envía un prompt de sistema y uno de usuario, y emite la respuesta completa.
+     * Sends a user message preceded by a system prompt, and emits the complete answer.
      *
-     * @param systemPrompt las instrucciones de comportamiento para el modelo
-     * @param userPrompt la pregunta o instrucción del usuario
-     * @return la respuesta del modelo, o un error {@link AiClientException}
+     * @param systemPrompt the behaviour instructions for the model
+     * @param userPrompt the user's question or instruction
+     * @return the model's answer, or an {@link AiClientException} error signal
      */
     public Mono<AiResponse> generate(String systemPrompt, String userPrompt) {
         return generate(List.of(Message.system(systemPrompt), Message.user(userPrompt)));
     }
 
     /**
-     * Envía una conversación completa y emite la respuesta del modelo.
+     * Sends a whole conversation and emits the model's answer.
      *
-     * @param messages la conversación en orden cronológico; no puede estar vacía
-     * @return la respuesta del modelo, o un error {@link AiClientException}
+     * @param messages the conversation in chronological order; must not be empty
+     * @return the model's answer, or an {@link AiClientException} error signal
      */
     public Mono<AiResponse> generate(List<Message> messages) {
         return Mono.defer(() -> {
-            validar(messages);
+            validate(messages);
 
-            return peticion(messages, false)
+            return request(messages, false)
                     .retrieve()
-                    .onStatus(status -> status.isError(), this::traducirError)
+                    .onStatus(status -> status.isError(), this::toTypedError)
                     .bodyToMono(OpenRouterResponse.class)
-                    .map(this::extraerContenido)
-                    .onErrorMap(noEsDeLaLibreria(), this::comoErrorDeRed)
-                    // Reintentar aquí es seguro: no se ha entregado nada al llamante todavía.
-                    .retryWhen(politicaDeReintentos(() -> false));
+                    .map(this::extractContent)
+                    .onErrorMap(notTypedYet(), this::asNetworkError)
+                    // Retrying is safe here: nothing has been handed to the caller yet.
+                    .retryWhen(retryPolicy(() -> false));
         });
     }
 
     /**
-     * Envía un único mensaje de usuario y emite el texto por trozos, según el modelo lo genera.
+     * Sends a single user message and emits the text in pieces, as the model generates it.
      *
-     * @param prompt la pregunta o instrucción para el modelo
-     * @return los fragmentos de texto en orden, o un error {@link AiClientException}
+     * @param prompt the question or instruction for the model
+     * @return the text fragments in order, or an {@link AiClientException} error signal
      */
     public Flux<String> stream(String prompt) {
         return stream(List.of(Message.user(prompt)));
     }
 
     /**
-     * Envía un prompt de sistema y uno de usuario, y emite el texto por trozos.
+     * Sends a user message preceded by a system prompt, and emits the text in pieces.
      *
-     * @param systemPrompt las instrucciones de comportamiento para el modelo
-     * @param userPrompt la pregunta o instrucción del usuario
-     * @return los fragmentos de texto en orden, o un error {@link AiClientException}
+     * @param systemPrompt the behaviour instructions for the model
+     * @param userPrompt the user's question or instruction
+     * @return the text fragments in order, or an {@link AiClientException} error signal
      */
     public Flux<String> stream(String systemPrompt, String userPrompt) {
         return stream(List.of(Message.system(systemPrompt), Message.user(userPrompt)));
     }
 
     /**
-     * Envía una conversación completa y emite el texto por trozos, según el modelo lo genera.
+     * Sends a whole conversation and emits the text in pieces, as the model generates it.
      *
-     * <p>Los fragmentos no tienen un tamaño garantizado: pueden ser una palabra, una sílaba o un
-     * signo de puntuación. Concaténalos para reconstruir la respuesta.
+     * <p>Fragments have no guaranteed size: one may be a word, a syllable or a punctuation mark.
+     * Concatenate them to rebuild the answer.
      *
-     * @param messages la conversación en orden cronológico; no puede estar vacía
-     * @return los fragmentos de texto en orden, o un error {@link AiClientException}
+     * @param messages the conversation in chronological order; must not be empty
+     * @return the text fragments in order, or an {@link AiClientException} error signal
      */
     public Flux<String> stream(List<Message> messages) {
         return Flux.defer(() -> {
-            validar(messages);
+            validate(messages);
 
-            // Reintentar un stream a medias duplicaría texto en la pantalla del usuario: si ya se
-            // emitió un fragmento, la respuesta empezaría de cero y él vería la frase dos veces.
-            // Solo es seguro reintentar mientras no se haya entregado nada.
-            AtomicBoolean yaSeEmitio = new AtomicBoolean();
+            // Retrying a half-delivered stream would duplicate text on the user's screen: the answer
+            // would start again from the beginning and they would read the same sentence twice. It is
+            // only safe to retry while nothing has been handed over.
+            AtomicBoolean tokenEmitted = new AtomicBoolean();
 
-            return peticion(messages, true)
+            return request(messages, true)
                     .accept(MediaType.TEXT_EVENT_STREAM)
                     .retrieve()
-                    .onStatus(status -> status.isError(), this::traducirError)
+                    .onStatus(status -> status.isError(), this::toTypedError)
                     .bodyToFlux(String.class)
-                    .takeUntil(FIN_DEL_STREAM::equals)
-                    .filter(evento -> !FIN_DEL_STREAM.equals(evento))
-                    .map(this::extraerFragmento)
-                    .filter(fragmento -> !fragmento.isEmpty())
-                    .doOnNext(fragmento -> yaSeEmitio.set(true))
-                    .onErrorMap(noEsDeLaLibreria(), this::comoErrorDeRed)
-                    .retryWhen(politicaDeReintentos(yaSeEmitio::get));
+                    .takeUntil(END_OF_STREAM::equals)
+                    .filter(event -> !END_OF_STREAM.equals(event))
+                    .map(this::extractToken)
+                    .filter(token -> !token.isEmpty())
+                    .doOnNext(token -> tokenEmitted.set(true))
+                    .onErrorMap(notTypedYet(), this::asNetworkError)
+                    .retryWhen(retryPolicy(tokenEmitted::get));
         });
     }
 
-    private WebClient.RequestHeadersSpec<?> peticion(List<Message> messages, boolean streaming) {
-        OpenRouterRequest cuerpo = new OpenRouterRequest();
-        cuerpo.setModel(properties.getModel());
-        cuerpo.setMessages(List.copyOf(messages));
-        cuerpo.setMaxTokens(properties.getMaxTokens());
-        cuerpo.setTemperature(properties.getTemperature());
-        cuerpo.setStream(streaming ? Boolean.TRUE : null);
+    private WebClient.RequestHeadersSpec<?> request(List<Message> messages, boolean streaming) {
+        OpenRouterRequest body = new OpenRouterRequest();
+        body.setModel(properties.getModel());
+        body.setMessages(List.copyOf(messages));
+        body.setMaxTokens(properties.getMaxTokens());
+        body.setTemperature(properties.getTemperature());
+        body.setStream(streaming ? Boolean.TRUE : null);
 
         return webClient.post()
                 .uri("/chat/completions")
                 .contentType(MediaType.APPLICATION_JSON)
-                .bodyValue(cuerpo);
+                .bodyValue(body);
     }
 
     /**
-     * Traduce una respuesta de error al mismo {@link AiClientException} que produce el cliente
-     * bloqueante, conservando el status y el cuerpo.
+     * Turns an error response into the very same {@link AiClientException} the blocking client
+     * produces, preserving the status and the body.
      */
-    private Mono<Throwable> traducirError(ClientResponse response) {
+    private Mono<Throwable> toTypedError(ClientResponse response) {
         int status = response.statusCode().value();
         return response.bodyToMono(String.class)
                 .defaultIfEmpty("")
-                .map(cuerpo -> new AiClientException(
-                        "Error llamando a la API de IA: " + status, status, cuerpo));
+                .map(body -> new AiClientException(
+                        "Error calling the AI API: " + status, status, body));
     }
 
-    private AiResponse extraerContenido(OpenRouterResponse response) {
+    /**
+     * The retry policy of the blocking client, expressed in Reactor: Feign's {@code Retryer} is one
+     * of its own beans and has no effect whatsoever on this path.
+     *
+     * @param tokenEmitted whether a fragment has already been handed to the caller, in which case
+     *     retrying would duplicate text and is therefore not done
+     */
+    private Retry retryPolicy(BooleanSupplier tokenEmitted) {
+        AiProperties.Retry config = properties.getRetry();
+
+        // Without onRetryExhaustedThrow, Reactor wraps the failure in a RetryExhaustedException and
+        // the caller would lose the AiClientException with its status and body. It is needed in both
+        // branches: even with retries off, Retry.max(0) wraps the first attempt's error.
+        if (!config.isEnabled()) {
+            return Retry.max(0).onRetryExhaustedThrow((spec, signal) -> signal.failure());
+        }
+
+        return Retry.backoff(config.getMaxAttempts() - 1L, config.getPeriod())
+                .maxBackoff(config.getMaxPeriod())
+                .filter(e -> isRetryable(e) && !tokenEmitted.getAsBoolean())
+                .onRetryExhaustedThrow((spec, signal) -> signal.failure());
+    }
+
+    /**
+     * The same criteria as the blocking client — rate limits, server errors and network failures —
+     * plus mid-stream failures.
+     *
+     * <p>A stream failure is transient by nature (the request was already accepted with a 200; what
+     * broke was the provider or the transport), so retrying it makes sense. What makes it
+     * <em>safe</em> is the guard in {@link #stream(List)}: once a token has been handed over, nothing
+     * is retried, because the user would see the text twice.
+     */
+    private static boolean isRetryable(Throwable e) {
+        if (!(e instanceof AiClientException error)) {
+            return false;
+        }
+        int status = error.getStatusCode();
+        return status == TOO_MANY_REQUESTS
+                || status >= 500
+                || status == AiClientException.NETWORK_ERROR
+                || status == AiClientException.STREAM_ERROR;
+    }
+
+    private AiResponse extractContent(OpenRouterResponse response) {
         if (response.getChoices() == null || response.getChoices().isEmpty()) {
             throw new AiClientException(
-                    "La API de IA devolvió una respuesta sin choices",
+                    "The AI API returned a response with no choices",
                     AiClientException.INVALID_RESPONSE,
                     null);
         }
@@ -188,7 +233,7 @@ public class ReactiveAiService {
         Message message = response.getChoices().get(0).getMessage();
         if (message == null || message.getContent() == null) {
             throw new AiClientException(
-                    "La API de IA devolvió un choice sin contenido",
+                    "The AI API returned a choice with no content",
                     AiClientException.INVALID_RESPONSE,
                     null);
         }
@@ -197,117 +242,73 @@ public class ReactiveAiService {
     }
 
     /**
-     * Política de reintentos equivalente a la del cliente bloqueante, pero expresada en Reactor:
-     * el {@code Retryer} de Feign es un bean suyo y no tiene ningún efecto por este camino.
+     * Returns the text of the fragment, or an empty string when the event carries no content.
      *
-     * @param yaSeEmitio si ya se entregó algún fragmento al llamante, en cuyo caso reintentar
-     *     duplicaría texto y no se hace
+     * <p>Watch out for the dangerous case: OpenRouter can send an error <em>inside</em> the stream,
+     * after having answered 200 and after having emitted tokens, with the failure in a top-level
+     * {@code error} field. That event also carries a {@code choices} entry with empty content, so
+     * without this check it would parse just fine, the empty fragment would be filtered out and the
+     * stream would end <em>normally</em>: the user would see their answer cut off mid-sentence and the
+     * application would never know.
      */
-    private Retry politicaDeReintentos(BooleanSupplier yaSeEmitio) {
-        AiProperties.Retry config = properties.getRetry();
-
-        // Sin onRetryExhaustedThrow, Reactor envuelve el fallo en una RetryExhaustedException y el
-        // llamante perdería la AiClientException con su status y su cuerpo. Hace falta en las dos
-        // ramas: incluso sin reintentos, Retry.max(0) envuelve el error del primer intento.
-        if (!config.isEnabled()) {
-            return Retry.max(0).onRetryExhaustedThrow((spec, signal) -> signal.failure());
-        }
-
-        return Retry.backoff(config.getMaxAttempts() - 1L, config.getPeriod())
-                .maxBackoff(config.getMaxPeriod())
-                .filter(e -> esReintentable(e) && !yaSeEmitio.getAsBoolean())
-                .onRetryExhaustedThrow((spec, signal) -> signal.failure());
-    }
-
-    /**
-     * Los mismos criterios que en el cliente bloqueante — rate limits, errores del servidor y red —
-     * más los fallos a mitad de stream.
-     *
-     * <p>Un fallo de stream es transitorio por naturaleza (la petición ya fue aceptada con un 200;
-     * lo que se rompió fue el proveedor o el transporte), así que reintentarlo tiene sentido. Que
-     * sea <em>seguro</em> lo garantiza el guardia de {@link #stream(List)}: si ya se entregó algún
-     * token, no se reintenta, porque el usuario vería el texto duplicado.
-     */
-    private static boolean esReintentable(Throwable e) {
-        if (!(e instanceof AiClientException error)) {
-            return false;
-        }
-        int status = error.getStatusCode();
-        return status == 429
-                || status >= 500
-                || status == AiClientException.NETWORK_ERROR
-                || status == AiClientException.STREAM_ERROR;
-    }
-
-    /**
-     * Devuelve el texto del fragmento, o cadena vacía si el evento no lleva contenido.
-     *
-     * <p>Ojo con el caso peligroso: OpenRouter puede mandar un error <em>dentro</em> del stream,
-     * después de haber respondido 200 y de haber emitido tokens, con el fallo en un campo
-     * {@code error} de primer nivel. Ese evento trae además un {@code choices} con el contenido
-     * vacío, así que sin esta comprobación se parsearía sin protestar, el fragmento vacío se
-     * filtraría y el stream terminaría <em>con normalidad</em>: el usuario vería su respuesta
-     * cortada a media frase y la aplicación no se enteraría de nada.
-     */
-    private String extraerFragmento(String evento) {
-        JsonNode nodo;
+    private String extractToken(String event) {
+        JsonNode node;
         try {
-            nodo = objectMapper.readTree(evento);
+            node = objectMapper.readTree(event);
         } catch (Exception e) {
             throw new AiClientException(
-                    "No se pudo interpretar un fragmento del stream de la API de IA",
+                    "Could not parse a fragment of the AI API's stream",
                     AiClientException.INVALID_RESPONSE,
-                    evento,
+                    event,
                     e);
         }
 
-        JsonNode error = nodo.get("error");
+        JsonNode error = node.get("error");
         if (error != null && !error.isNull()) {
             throw new AiClientException(
-                    "La API de IA falló a mitad del stream: "
-                            + error.path("message").asText("sin detalle"),
-                    statusDelError(error),
-                    evento);
+                    "The AI API failed mid-stream: " + error.path("message").asText("no detail"),
+                    streamErrorStatus(error),
+                    event);
         }
 
-        JsonNode delta = nodo.path("choices").path(0).path("delta").path("content");
-        return delta.isTextual() ? delta.asText() : "";
+        JsonNode content = node.path("choices").path(0).path("delta").path("content");
+        return content.isTextual() ? content.asText() : "";
     }
 
     /**
-     * El código del error puede venir como número (429) o como texto ("server_error").
+     * The error code may arrive as a number (429) or as text ("server_error").
      *
-     * <p>Cuando es numérico se respeta, con su significado de siempre: un 402 a mitad de stream
-     * sigue sin reintentarse. Cuando es texto no hay forma de saber qué clase de fallo es, y se
-     * clasifica como {@link AiClientException#STREAM_ERROR}, que sí es reintentable. Sin esa
-     * distinción, el mismo fallo del proveedor se reintentaría o no según el tipo JSON que
-     * OpenRouter le pusiera al código, que es una diferencia absurda.
+     * <p>When it is numeric it is honoured, with its usual meaning: a 402 mid-stream is still not
+     * retried. When it is text there is no way to tell what kind of failure it is, so it is
+     * classified as {@link AiClientException#STREAM_ERROR}, which <em>is</em> retryable. Without that
+     * distinction, the same provider failure would be retried or not depending on which JSON type
+     * OpenRouter happened to give the code, which is an absurd difference.
      */
-    private static int statusDelError(JsonNode error) {
-        JsonNode codigo = error.path("code");
-        return codigo.isInt() ? codigo.asInt() : AiClientException.STREAM_ERROR;
+    private static int streamErrorStatus(JsonNode error) {
+        JsonNode code = error.path("code");
+        return code.isInt() ? code.asInt() : AiClientException.STREAM_ERROR;
     }
 
-    private void validar(List<Message> messages) {
+    private void validate(List<Message> messages) {
         if (messages == null || messages.isEmpty()) {
-            throw new IllegalArgumentException("La conversación debe tener al menos un mensaje");
+            throw new IllegalArgumentException("The conversation must have at least one message");
         }
         if (!StringUtils.hasText(properties.getApiKey())) {
             throw new AiClientException(
-                    "La propiedad ai.api-key no está configurada",
+                    "The ai.api-key property is not configured",
                     AiClientException.CONFIGURATION_ERROR,
                     null);
         }
     }
 
-    /** Todo lo que no haya tipado ya la librería es un fallo de transporte. */
-    private java.util.function.Predicate<Throwable> noEsDeLaLibreria() {
+    /** Anything this library has not already typed is a transport failure. */
+    private Predicate<Throwable> notTypedYet() {
         return e -> !(e instanceof AiClientException);
     }
 
-    private AiClientException comoErrorDeRed(Throwable e) {
+    private AiClientException asNetworkError(Throwable e) {
         return new AiClientException(
-                "Error de comunicación con la API de IA: " + e.getMessage(),
+                "Error communicating with the AI API: " + e.getMessage(),
                 AiClientException.NETWORK_ERROR,
                 null,
                 e);

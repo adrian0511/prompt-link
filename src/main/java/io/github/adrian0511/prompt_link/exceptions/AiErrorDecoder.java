@@ -13,19 +13,19 @@ import feign.RetryableException;
 import feign.codec.ErrorDecoder;
 
 /**
- * Traduce las respuestas de error de OpenRouter a {@link AiClientException}, conservando el código
- * HTTP y el cuerpo. Sin esto, Feign lanzaría una {@code FeignException} genérica y el llamante
- * tendría que depender de tipos de Feign para saber qué falló.
+ * Translates OpenRouter's error responses into {@link AiClientException}, preserving the HTTP status
+ * and the body. Without this, Feign would throw a generic {@code FeignException} and callers would
+ * have to depend on Feign's types just to find out what failed.
  *
- * <p>Los rate limits (429) y los errores del servidor (5xx) se envuelven además en una
- * {@link RetryableException}, que es la forma que tiene Feign de señalar "esto se puede reintentar".
- * Quien decide si se reintenta de verdad es el {@code Retryer} configurado, no este decoder: con la
- * configuración por defecto no se reintenta nada y la excepción se propaga en el acto. En ambos
- * casos la {@link AiClientException} original viaja como causa, así que el llamante recibe siempre
- * el mismo tipo de error con su status y su cuerpo intactos.
+ * <p>Rate limits (429) and server errors (5xx) are additionally wrapped in a
+ * {@link RetryableException}, which is how Feign signals "this may be retried". Whether it actually
+ * is retried is up to the configured {@code Retryer}, not this decoder: with the default
+ * configuration nothing is retried and the exception propagates immediately. Either way the original
+ * {@link AiClientException} travels along as the cause, so the caller always sees the same error
+ * type with its status and body intact.
  *
- * <p>Se registra en {@code AiFeignConfiguration}, de modo que solo afecta al cliente de OpenRouter
- * y no a otros clientes Feign de la aplicación.
+ * <p>Registered in {@code AiFeignConfiguration}, so it only affects the OpenRouter client and not
+ * any other Feign client in the application.
  */
 public class AiErrorDecoder implements ErrorDecoder {
 
@@ -36,11 +36,11 @@ public class AiErrorDecoder implements ErrorDecoder {
     @Override
     public Exception decode(String methodKey, Response response) {
         AiClientException error = new AiClientException(
-                "Error llamando a la API de IA: " + response.status(),
+                "Error calling the AI API: " + response.status(),
                 response.status(),
                 readBody(response));
 
-        if (!esReintentable(response.status())) {
+        if (!isRetryable(response.status())) {
             return error;
         }
 
@@ -49,47 +49,47 @@ public class AiErrorDecoder implements ErrorDecoder {
                 error.getMessage(),
                 response.request().httpMethod(),
                 error,
-                reintentarA(response),
+                retryAt(response),
                 response.request());
     }
 
     /**
-     * Un 429 significa que la petición ni siquiera se procesó, y un 5xx que el fallo es del lado de
-     * OpenRouter. El resto (401, 402, 404…) depende de la petición o de la cuenta: repetirla daría
-     * exactamente el mismo error.
+     * A 429 means the request was never even processed, and a 5xx means the failure is on
+     * OpenRouter's side. Everything else (401, 402, 404…) depends on the request or the account:
+     * repeating it would produce exactly the same error.
      */
-    private static boolean esReintentable(int status) {
+    private static boolean isRetryable(int status) {
         return status == TOO_MANY_REQUESTS || status >= 500;
     }
 
     /**
-     * OpenRouter indica en Retry-After cuántos segundos esperar. Feign espera ese dato como el
-     * instante absoluto a partir del cual reintentar.
+     * OpenRouter uses Retry-After to say how many seconds to wait. Feign expects that as the
+     * absolute instant from which to retry.
      */
-    private Long reintentarA(Response response) {
-        String retryAfter = primeraCabecera(response.headers(), "Retry-After");
+    private Long retryAt(Response response) {
+        String retryAfter = firstHeader(response.headers(), "Retry-After");
         if (retryAfter == null) {
             return null;
         }
         try {
             return System.currentTimeMillis() + Long.parseLong(retryAfter.trim()) * 1000L;
         } catch (NumberFormatException e) {
-            // La cabecera admite también una fecha HTTP. No la interpretamos: es raro que
-            // OpenRouter la use, y el Retryer tiene su propio backoff al que caer.
-            log.debug("Cabecera Retry-After no numérica, se ignora: {}", retryAfter);
+            // The header also accepts an HTTP date. We do not parse it: OpenRouter rarely uses that
+            // form, and the Retryer has its own backoff to fall back on.
+            log.debug("Non-numeric Retry-After header, ignoring it: {}", retryAfter);
             return null;
         }
     }
 
-    private static String primeraCabecera(Map<String, Collection<String>> headers, String nombre) {
-        Collection<String> valores = headers.get(nombre);
-        return valores == null || valores.isEmpty() ? null : valores.iterator().next();
+    private static String firstHeader(Map<String, Collection<String>> headers, String name) {
+        Collection<String> values = headers.get(name);
+        return values == null || values.isEmpty() ? null : values.iterator().next();
     }
 
     /**
-     * El cuerpo es lo más valioso del error (OpenRouter explica ahí si es la clave, los créditos o
-     * el rate limit), pero no poder leerlo no debe tapar el error HTTP original: si falla, se
-     * registra y se devuelve vacío.
+     * The body is the most valuable part of the error (OpenRouter explains there whether it is the
+     * key, the credits or the rate limit), but failing to read it must not hide the original HTTP
+     * error: if it fails, it is logged and an empty body is returned.
      */
     private String readBody(Response response) {
         if (response.body() == null) {
@@ -98,7 +98,7 @@ public class AiErrorDecoder implements ErrorDecoder {
         try (var input = response.body().asInputStream()) {
             return new String(input.readAllBytes(), StandardCharsets.UTF_8);
         } catch (IOException e) {
-            log.warn("No se pudo leer el cuerpo de la respuesta de error de la API de IA", e);
+            log.warn("Could not read the body of the AI API's error response", e);
             return "";
         }
     }

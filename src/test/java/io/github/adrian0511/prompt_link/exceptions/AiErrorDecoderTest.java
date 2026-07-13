@@ -14,15 +14,15 @@ import feign.Response;
 import feign.RetryableException;
 
 /**
- * Comprueba la traducción de las respuestas de error de OpenRouter: que el status y el cuerpo
- * sobrevivan, y que solo se marque como reintentable lo que de verdad tiene sentido reintentar.
+ * Covers the translation of OpenRouter's error responses: that the status and the body survive, and
+ * that only what is actually worth retrying gets marked as retryable.
  */
 class AiErrorDecoderTest {
 
     private final AiErrorDecoder decoder = new AiErrorDecoder();
 
     @Test
-    void conservaElStatusYElCuerpoDelError() {
+    void preservesTheStatusAndTheBodyOfTheError() {
         Exception decoded = decoder.decode("AiClient#chatCompletion(OpenRouterRequest)",
                 responseWith(402, "{\"error\":\"insufficient credits\"}"));
 
@@ -34,7 +34,7 @@ class AiErrorDecoderTest {
     }
 
     @Test
-    void toleraUnaRespuestaSinCuerpo() {
+    void toleratesAResponseWithNoBody() {
         Exception decoded = decoder.decode("AiClient#chatCompletion(OpenRouterRequest)",
                 responseWith(401, null));
 
@@ -44,52 +44,51 @@ class AiErrorDecoderTest {
     }
 
     @Test
-    void marcaLosRateLimitsYLosErroresDelServidorComoReintentables() {
+    void marksRateLimitsAndServerErrorsAsRetryable() {
         assertThat(decoder.decode("x", responseWith(429, "{}"))).isInstanceOf(RetryableException.class);
         assertThat(decoder.decode("x", responseWith(500, "{}"))).isInstanceOf(RetryableException.class);
         assertThat(decoder.decode("x", responseWith(503, "{}"))).isInstanceOf(RetryableException.class);
     }
 
-    /** Repetirlos daría exactamente el mismo error: el problema es la petición o la cuenta. */
+    /** Repeating these would produce the exact same error: the request or the account is the problem. */
     @Test
-    void noMarcaComoReintentablesLosErroresDeLaPeticion() {
+    void doesNotMarkRequestErrorsAsRetryable() {
         assertThat(decoder.decode("x", responseWith(401, "{}"))).isExactlyInstanceOf(AiClientException.class);
         assertThat(decoder.decode("x", responseWith(402, "{}"))).isExactlyInstanceOf(AiClientException.class);
         assertThat(decoder.decode("x", responseWith(404, "{}"))).isExactlyInstanceOf(AiClientException.class);
     }
 
-    /** Aun siendo reintentable, el error tipado viaja dentro para que el llamante no pierda nada. */
+    /** Even when retryable, the typed error travels inside so that the caller loses nothing. */
     @Test
-    void conservaElErrorTipadoComoCausaDeLoReintentable() {
-        RetryableException reintentable =
+    void keepsTheTypedErrorAsTheCauseOfTheRetryableOne() {
+        RetryableException retryable =
                 (RetryableException) decoder.decode("x", responseWith(429, "{\"error\":\"slow down\"}"));
 
-        assertThat(reintentable.getCause())
+        assertThat(retryable.getCause())
                 .isInstanceOf(AiClientException.class)
-                .satisfies(causa -> {
-                    AiClientException error = (AiClientException) causa;
+                .satisfies(cause -> {
+                    AiClientException error = (AiClientException) cause;
                     assertThat(error.getStatusCode()).isEqualTo(429);
                     assertThat(error.getErrorBody()).contains("slow down");
                 });
     }
 
     @Test
-    void respetaLaCabeceraRetryAfter() {
+    void honoursTheRetryAfterHeader() {
         Response response = responseWith(429, "{}", Map.of("Retry-After", List.of("2")));
 
-        RetryableException reintentable = (RetryableException) decoder.decode("x", response);
+        RetryableException retryable = (RetryableException) decoder.decode("x", response);
 
-        // Feign lo interpreta como el instante absoluto a partir del cual reintentar.
-        long dentroDeDosSegundos = System.currentTimeMillis() + 2_000L;
-        assertThat(reintentable.retryAfter())
-                .isBetween(dentroDeDosSegundos - 1_000L, dentroDeDosSegundos + 1_000L);
+        // Feign reads it as the absolute instant from which to retry.
+        long inTwoSeconds = System.currentTimeMillis() + 2_000L;
+        assertThat(retryable.retryAfter()).isBetween(inTwoSeconds - 1_000L, inTwoSeconds + 1_000L);
     }
 
     @Test
-    void sinRetryAfterDejaQueDecidaElBackoffDelRetryer() {
-        RetryableException reintentable = (RetryableException) decoder.decode("x", responseWith(429, "{}"));
+    void withoutRetryAfterItLetsTheRetryerDecideTheBackoff() {
+        RetryableException retryable = (RetryableException) decoder.decode("x", responseWith(429, "{}"));
 
-        assertThat(reintentable.retryAfter()).isNull();
+        assertThat(retryable.retryAfter()).isNull();
     }
 
     private static Response responseWith(int status, String body) {

@@ -6,10 +6,10 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 /**
- * El cuerpo que se envía a {@code POST /chat/completions}.
+ * The body sent to {@code POST /chat/completions}.
  *
- * <p>Los campos nulos se omiten al serializar: así, si no configuras {@code temperature}, no se
- * manda y cada modelo aplica su propio valor por defecto, que es lo que se espera.
+ * <p>Null fields are omitted when serializing: if you do not configure {@code temperature} it is not
+ * sent at all, and each model applies its own default, which is what callers expect.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class OpenRouterRequest {
@@ -17,13 +17,13 @@ public class OpenRouterRequest {
     private String model;
     private List<Message> messages;
 
-    /** La API espera snake_case; el resto de campos coinciden con el nombre Java. */
+    /** The API expects snake_case here; every other field matches its Java name. */
     @JsonProperty("max_tokens")
     private int maxTokens;
 
     private Double temperature;
 
-    /** Si es {@code true}, la respuesta llega como eventos SSE en vez de como un cuerpo único. */
+    /** When {@code true}, the answer arrives as SSE events instead of as a single body. */
     private Boolean stream;
 
     public OpenRouterRequest() {

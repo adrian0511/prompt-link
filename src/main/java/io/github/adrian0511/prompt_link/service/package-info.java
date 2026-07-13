@@ -1,8 +1,12 @@
 /**
- * La API pública de la librería.
+ * The library's public API.
  *
- * <p>{@link io.github.adrian0511.prompt_link.service.AiService} es lo único que necesitas inyectar:
- * valida la configuración, construye la petición a partir de las propiedades {@code ai.*}, llama a
- * OpenRouter y comprueba que la respuesta sea utilizable antes de devolverla.
+ * <p>{@link io.github.adrian0511.prompt_link.service.AiService} is the only thing you need to inject:
+ * it validates the configuration, builds the request from the {@code ai.*} properties, calls
+ * OpenRouter and checks that the answer is usable before returning it.
+ *
+ * <p>{@link io.github.adrian0511.prompt_link.service.ReactiveAiService} is its reactive counterpart,
+ * registered only when WebFlux is on the classpath. It adds streaming: emitting the tokens as the
+ * model generates them.
  */
 package io.github.adrian0511.prompt_link.service;

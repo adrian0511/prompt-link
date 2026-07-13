@@ -12,14 +12,14 @@ import feign.codec.ErrorDecoder;
 import io.github.adrian0511.prompt_link.exceptions.AiErrorDecoder;
 
 /**
- * Configuración del cliente Feign de OpenRouter.
+ * Configuration of the OpenRouter Feign client.
  *
- * <p>Esta clase <strong>no</strong> lleva {@code @Configuration} a propósito: Spring Cloud la
- * registra únicamente en el contexto hijo del cliente {@code openrouter}. Si sus beans vivieran en
- * el contexto principal, Feign los heredaría en <em>todos</em> los clientes de la aplicación
- * (resuelve interceptores y error decoders mirando también a los contextos ancestros), y la
- * cabecera Authorization con la API key de OpenRouter viajaría a cualquier otro servicio que la
- * aplicación llamase por Feign.
+ * <p>This class deliberately carries <strong>no</strong> {@code @Configuration}: Spring Cloud
+ * registers it only in the child context of the {@code openrouter} client. If its beans lived in the
+ * main context, Feign would inherit them in <em>every</em> client of the application — it resolves
+ * interceptors and error decoders by also looking at ancestor contexts — and the Authorization
+ * header carrying the OpenRouter API key would travel to any other service the application called
+ * over Feign.
  */
 public class AiFeignConfiguration {
 
@@ -40,9 +40,9 @@ public class AiFeignConfiguration {
     }
 
     /**
-     * Feign no reintenta nada por defecto, y así se queda salvo que lo actives con
-     * {@code ai.retry.enabled}. Cuando está activo, reintenta lo que {@code AiErrorDecoder} marca
-     * como reintentable (429 y 5xx) y los fallos de red, con backoff exponencial.
+     * Feign retries nothing by default, and it stays that way unless you enable it with
+     * {@code ai.retry.enabled}. Once enabled, it retries whatever {@code AiErrorDecoder} marks as
+     * retryable (429 and 5xx) plus network failures, with exponential backoff.
      */
     @Bean
     @ConditionalOnMissingBean

@@ -4,32 +4,32 @@
 [![Java Version](https://img.shields.io/badge/Java-21+-blue.svg)](https://adoptium.net/)
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.adrian0511/prompt-link.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/io.github.adrian0511/prompt-link)
 
-**Prompt Link** es un cliente Java reutilizable para consumir IA generativa a través de OpenRouter, con auto‑configuración para Spring Boot. Permite integrar modelos como GPT, Claude, Llama, etc., en tus aplicaciones de forma sencilla y con manejo de errores tipado.
+**Prompt Link** is a reusable Java client for generative AI through OpenRouter, with Spring Boot auto-configuration. It lets you integrate models like GPT, Claude or Llama into your applications with typed error handling and, on WebFlux, token streaming.
 
-## ✨ Características
+## ✨ Features
 
-- **Integración con OpenRouter** – Soporta todos los modelos disponibles.
-- **Auto‑configuración Spring Boot** – Solo añade la dependencia; **no necesitas `@EnableFeignClients`**.
-- **Cliente Feign aislado** – Su interceptor y su error decoder viven solo en el contexto del cliente de OpenRouter, así que **tu API key nunca se filtra a otros clientes Feign** de tu aplicación.
-- **Manejo de errores tipado** – `AiClientException` distingue errores HTTP, de red, de respuesta y de configuración.
-- **Streaming de tokens** – `Flux<String>` sobre WebFlux: el texto llega según se genera.
-- **Conversaciones multi‑turno** – System prompt e historial de mensajes.
-- **Timeouts configurables** – Con valores por defecto pensados para LLM.
+- **OpenRouter integration** – Every model it offers.
+- **Spring Boot auto-configuration** – Just add the dependency; **no `@EnableFeignClients` needed**.
+- **Isolated Feign client** – Its interceptor and error decoder live only in the OpenRouter client's context, so **your API key never leaks into other Feign clients** of your application.
+- **Typed error handling** – `AiClientException` tells API errors, network errors, unusable responses and configuration mistakes apart.
+- **Token streaming** – `Flux<String>` on WebFlux: text arrives as it is generated.
+- **Multi-turn conversations** – System prompt and message history.
+- **Configurable timeouts and retries** – With defaults chosen for LLM workloads.
 
-## ⚠️ Actualiza desde 1.0.2
+## ⚠️ Upgrading from 1.0.2
 
-La 1.0.2 tiene dos fallos serios, ambos corregidos en 1.0.3:
+1.0.2 has two serious bugs, both fixed in 1.0.3:
 
-- El interceptor que añade `Authorization: Bearer <tu-api-key>` se registraba en el contexto principal, así que Feign lo aplicaba a **todos** los clientes Feign de tu aplicación: la API key de OpenRouter viajaba a cualquier otro servicio que llamases por Feign.
-- Todos los errores HTTP (401, 429, 402…) llegaban con `statusCode = -1` y `errorBody = null`, indistinguibles de un error de red.
+- The interceptor adding `Authorization: Bearer <your-api-key>` was registered in the main context, so Feign applied it to **every** Feign client of your application: the OpenRouter API key travelled to any other service you called over Feign. **If you used 1.0.2 alongside other Feign clients, rotate your key.**
+- Every HTTP error (401, 429, 402…) arrived with `statusCode = -1` and `errorBody = null`, indistinguishable from a network error.
 
-## 📋 Requisitos
+## 📋 Requirements
 
-- Java 21 o superior
-- Spring Boot 4.0.x (compatible con Spring Cloud 2025.1.x)
+- Java 21 or later
+- Spring Boot 4.0.x (compatible with Spring Cloud 2025.1.x)
 - Maven 3.6+
 
-## 🚀 Instalación
+## 🚀 Installation
 
 ### Maven
 
@@ -47,58 +47,58 @@ La 1.0.2 tiene dos fallos serios, ambos corregidos en 1.0.3:
 implementation 'io.github.adrian0511:prompt-link:1.1.0'
 ```
 
-## ⚙️ Configuración
+## ⚙️ Configuration
 
-En tu `application.yml` (o `application.properties`):
+In your `application.yml` (or `application.properties`):
 
 ```yaml
 ai:
-  api-key: ${OPENROUTER_API_KEY}   # Obligatoria. Nunca la hardcodees.
-  model: openai/gpt-4o-mini         # Modelo a utilizar
-  max-tokens: 5000                  # Máximo de tokens en la respuesta
-  temperature: 0.7                  # Opcional; si se omite, se usa el default del modelo
-  url: https://openrouter.ai/api/v1 # Base URL de OpenRouter (no incluyas /chat/completions)
-  host: http://localhost:8080       # URL de tu app (cabecera HTTP-Referer, para atribución)
-  title: Spring AI Client           # Nombre de tu app (cabecera X-Title)
-  connect-timeout: 10s              # Timeout de conexión
-  read-timeout: 60s                 # Timeout de lectura; súbelo con modelos grandes
+  api-key: ${OPENROUTER_API_KEY}   # Required. Never hardcode it.
+  model: openai/gpt-4o-mini         # Model to use
+  max-tokens: 5000                  # Maximum tokens in the answer
+  temperature: 0.7                  # Optional; omitted, the model's own default applies
+  url: https://openrouter.ai/api/v1 # OpenRouter base URL (do not include /chat/completions)
+  host: http://localhost:8080       # Your app's URL (HTTP-Referer header, for attribution)
+  title: Spring AI Client           # Your app's name (X-Title header)
+  connect-timeout: 10s              # Connection timeout
+  read-timeout: 60s                 # Inactivity timeout (see below)
   retry:
-    enabled: false                  # Reintentos ante 429 y 5xx (ver más abajo)
-    max-attempts: 2                 # Intentos totales, incluido el primero
-    period: 500ms                   # Espera inicial; crece exponencialmente
-    max-period: 5s                  # Tope de la espera entre intentos
+    enabled: false                  # Retries on 429 and 5xx (see below)
+    max-attempts: 2                 # Total attempts, including the first one
+    period: 500ms                   # Initial wait; grows exponentially
+    max-period: 5s                  # Cap on the wait between attempts
 ```
 
-Solo `api-key` es obligatoria; el resto tiene los valores por defecto de arriba. Mantén tu clave en variables de entorno o en un secreto de tu plataforma.
+Only `api-key` is required; everything else defaults to the values above. Keep your key in an environment variable or in your platform's secret store.
 
-### 🔁 Reintentos
+### 🔁 Retries
 
-Vienen **desactivados a propósito**. Generar una respuesta no es una operación idempotente: si la petición se pierde *después* de que el modelo la haya procesado (por ejemplo, un timeout de lectura), reintentarla la genera otra vez y **te la cobran dos veces**.
+They are **disabled on purpose**. Generating an answer is not an idempotent operation: if the request is lost *after* the model has already processed it (a read timeout, say), retrying generates it again and **you get billed twice**.
 
-Actívalos con `ai.retry.enabled: true` si prefieres asumir ese riesgo a cambio de aguantar los rate limits, que en OpenRouter son frecuentes. Cuando están activos:
+Enable them with `ai.retry.enabled: true` if you would rather take that risk in exchange for surviving rate limits, which are frequent on OpenRouter. Once enabled:
 
-- Se reintentan los **429** (la petición ni llegó a procesarse, así que reintentarla es seguro) y los **5xx**, con backoff exponencial y respetando la cabecera `Retry-After` si OpenRouter la envía.
-- **No** se reintentan los 401, 402, 404 ni el resto de errores de la petición: repetirlos daría exactamente el mismo error.
-- Si se agotan los intentos, recibes la misma `AiClientException` que recibirías sin reintentos, con su `statusCode` y su `errorBody` intactos.
-- En `stream(...)`, solo se reintenta **antes del primer token**. Una vez has empezado a recibir texto, reintentar reenviaría la respuesta desde el principio y el usuario vería la frase duplicada en pantalla.
+- **429** responses are retried (the request was never processed, so repeating it is safe) along with **5xx**, using exponential backoff and honouring the `Retry-After` header when OpenRouter sends it.
+- 401, 402, 404 and other request errors are **not** retried: repeating them would produce the exact same error.
+- If the attempts run out, you get the same `AiClientException` you would have got without retries, with its `statusCode` and `errorBody` intact.
+- In `stream(...)`, retries only happen **before the first token**. Once text has started arriving, retrying would resend the answer from the beginning and the user would see the sentence twice.
 
-Los timeouts y los reintentos se aplican **igual en los dos caminos**, el bloqueante y el reactivo. El `read-timeout` es un timeout de **inactividad**, no total: mide el tiempo sin recibir nada por la red. En streaming eso significa que una respuesta que tarde varios minutos en generarse no se corta mientras siga llegando texto; lo que se detecta es que el stream se quede mudo.
+Timeouts and retries apply **equally to both paths**, blocking and reactive. `read-timeout` is an **inactivity** timeout, not a total one: it measures time spent receiving nothing over the network. For streaming that means an answer taking minutes to generate is not cut off while text keeps flowing; what gets detected is a stream that goes silent.
 
-#### Cuidado con la latencia del peor caso
+#### Mind the worst-case latency
 
-Cada intento puede llegar a agotar el `read-timeout`, así que con reintentos activos el tiempo máximo antes de devolver un error es aproximadamente:
+Each attempt can exhaust the `read-timeout`, so with retries on, the longest you can wait before getting an error is roughly:
 
 ```
 max-attempts × read-timeout + backoff
 ```
 
-Con los valores por defecto (`2 × 60s`) eso son unos dos minutos con el usuario mirando la pantalla. Si tu caso es un chat interactivo, ajusta `max-attempts` y `read-timeout` a lo que tu interfaz pueda tolerar.
+With the defaults (`2 × 60s`) that is about two minutes of the user staring at the screen. If yours is an interactive chat, tune `max-attempts` and `read-timeout` to whatever your UI can tolerate.
 
-Ojo con bajar mucho el `read-timeout`: en una llamada **sin streaming**, OpenRouter no envía ni un byte hasta que el modelo ha terminado de generar, así que todo ese rato cuenta como inactividad. Un `read-timeout` de 25s mataría cualquier respuesta que tarde más de 25 segundos en generarse, que son muchas. En **streaming** el problema no existe, porque el primer token llega enseguida y luego el flujo no para: ahí sí puedes bajarlo sin miedo. Es otra razón para preferir `stream(...)` en interfaces de chat.
+Be careful about lowering `read-timeout` too far: on a **non-streaming** call, OpenRouter sends no bytes at all until the model has finished generating, so that entire wait counts as inactivity. A 25s `read-timeout` would kill any answer that takes longer than 25 seconds to generate, and plenty do. With **streaming** the problem disappears, because the first token arrives quickly and the flow does not stop after that: there you can lower it safely. One more reason to prefer `stream(...)` in chat interfaces.
 
-## 📝 Uso básico
+## 📝 Basic usage
 
-No necesitas `@EnableFeignClients`. Inyecta `AiService` directamente:
+No `@EnableFeignClients` needed. Just inject `AiService`:
 
 ```java
 @RestController
@@ -117,11 +117,11 @@ public class ChatController {
 }
 ```
 
-### ⚡ Streaming de tokens (WebFlux)
+### ⚡ Token streaming (WebFlux)
 
-Si tu aplicación es reactiva, puedes recibir el texto **según el modelo lo genera**, en vez de esperar a la respuesta completa. Es lo que hace que un chat se sienta vivo.
+If your application is reactive, you can receive the text **as the model generates it** instead of waiting for the whole answer. That is what makes a chat feel alive.
 
-Añade WebFlux a *tu* aplicación (en la librería es una dependencia opcional, así que si no lo haces no arrastras reactor-netty):
+Add WebFlux to *your* application (in this library it is an optional dependency, so if you skip this you never drag in reactor-netty):
 
 ```xml
 <dependency>
@@ -130,7 +130,7 @@ Añade WebFlux a *tu* aplicación (en la librería es una dependencia opcional, 
 </dependency>
 ```
 
-Con eso, `ReactiveAiService` se autoconfigura solo:
+With that, `ReactiveAiService` auto-configures itself:
 
 ```java
 @RestController
@@ -142,13 +142,13 @@ public class ChatController {
         this.aiService = aiService;
     }
 
-    // Los tokens llegan al navegador según se generan
+    // Tokens reach the browser as they are generated
     @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<String> stream(@RequestParam String prompt) {
         return aiService.stream(prompt);
     }
 
-    // Y la respuesta completa, sin bloquear ningún hilo
+    // Or the whole answer, without blocking a thread
     @GetMapping("/ask")
     public Mono<String> ask(@RequestParam String prompt) {
         return aiService.generate(prompt).map(AiResponse::getContent);
@@ -156,39 +156,39 @@ public class ChatController {
 }
 ```
 
-`stream(...)` acepta las mismas variantes que `generate(...)`: prompt suelto, system + user, o una `List<Message>` con el historial. Los errores son **idénticos** a los del servicio bloqueante (`AiClientException` con el mismo `statusCode`), así que no tienes que aprender dos modelos de errores.
+`stream(...)` takes the same variants as `generate(...)`: a bare prompt, system + user, or a `List<Message>` with the history. Errors are **identical** to the blocking service (`AiClientException` with the same `statusCode`), so there is no second error model to learn.
 
-Los fragmentos no tienen un tamaño garantizado — pueden ser una palabra, una sílaba o un signo de puntuación. Concaténalos para reconstruir la respuesta.
+Fragments have no guaranteed size — one may be a word, a syllable or a punctuation mark. Concatenate them to rebuild the answer.
 
-### System prompt y conversaciones multi‑turno
+### System prompt and multi-turn conversations
 
 ```java
-// Con system prompt
-AiResponse response = aiService.generate("Eres un experto en Java conciso.", "¿Qué es un record?");
+// With a system prompt
+AiResponse response = aiService.generate("You are a concise Java expert.", "What is a record?");
 
-// Conversación completa, manteniendo el historial entre turnos
-List<Message> conversacion = List.of(
-        Message.system("Eres un asistente de soporte técnico."),
-        Message.user("Mi aplicación no arranca."),
-        Message.assistant("¿Qué error muestra el log?"),
+// A full conversation, keeping the history across turns
+List<Message> conversation = List.of(
+        Message.system("You are a technical support assistant."),
+        Message.user("My application will not start."),
+        Message.assistant("What error does the log show?"),
         Message.user("NoSuchBeanDefinitionException"));
 
-AiResponse response = aiService.generate(conversacion);
+AiResponse response = aiService.generate(conversation);
 ```
 
-## 🧩 Manejo de errores
+## 🧩 Error handling
 
-`AiService` lanza `AiClientException` ante cualquier fallo. El `statusCode` te dice qué pasó:
+`AiService` throws `AiClientException` on any failure. The `statusCode` tells you what happened:
 
-| `statusCode` | Constante | Significado |
+| `statusCode` | Constant | Meaning |
 | --- | --- | --- |
-| `> 0` | – | Error HTTP de la API (401, 402, 429, 5xx…). `getErrorBody()` trae el cuerpo. |
-| `-1` | `NETWORK_ERROR` | La llamada no llegó a completarse: timeout, DNS, conexión rechazada. |
-| `-2` | `INVALID_RESPONSE` | La API respondió 200 pero sin `choices` o sin contenido utilizable. |
-| `-3` | `CONFIGURATION_ERROR` | Falta `ai.api-key`. |
-| `-4` | `STREAM_ERROR` | La API falló a mitad de un stream, sin dar un código HTTP numérico. Se trata como transitorio. |
+| `> 0` | – | HTTP error from the API (401, 402, 429, 5xx…). `getErrorBody()` holds the body. |
+| `-1` | `NETWORK_ERROR` | The call never completed: timeout, DNS failure, connection refused. |
+| `-2` | `INVALID_RESPONSE` | The API answered 200 but with no `choices` or no usable content. |
+| `-3` | `CONFIGURATION_ERROR` | `ai.api-key` is missing. |
+| `-4` | `STREAM_ERROR` | The API failed mid-stream without a numeric HTTP code. Treated as transient. |
 
-Puedes usar `isHttpError()` como atajo para el primer caso, y capturarla globalmente con `@RestControllerAdvice`:
+Use `isHttpError()` as a shortcut for the first case, and catch it globally with `@RestControllerAdvice`:
 
 ```java
 @RestControllerAdvice
@@ -205,15 +205,15 @@ public class GlobalExceptionHandler {
 }
 ```
 
-## 🛠️ Personalización avanzada
+## 🛠️ Advanced customization
 
-Todos los beans de la librería usan `@ConditionalOnMissingBean`, así que puedes sustituirlos por los tuyos.
+Every bean in this library uses `@ConditionalOnMissingBean`, so you can replace any of them with your own.
 
-Para cambiar los beans **de Feign** (interceptor, error decoder, timeouts), decláralos en una clase de configuración del cliente, no en una `@Configuration` normal — si los pones en el contexto principal, Feign los aplicará a todos los clientes de tu aplicación:
+To change **Feign's** beans (interceptor, error decoder, timeouts, retryer), declare them in a client configuration class, not in a regular `@Configuration` — if you put them in the main context, Feign will apply them to every client of your application:
 
 ```java
-// Sin @Configuration: Spring Cloud la carga solo en el contexto de este cliente
-public class MiFeignConfig {
+// No @Configuration: Spring Cloud loads it only in this client's context
+public class MyFeignConfig {
 
     @Bean
     public RequestInterceptor customInterceptor(AiProperties properties) {
@@ -226,13 +226,13 @@ public class MiFeignConfig {
 ```
 
 ```java
-@FeignClient(name = "openrouter", url = "${ai.url}", configuration = MiFeignConfig.class)
-public interface MiAiClient extends AiClient { }
+@FeignClient(name = "openrouter", url = "${ai.url}", configuration = MyFeignConfig.class)
+public interface MyAiClient extends AiClient { }
 ```
 
-Para sustituir el servicio entero, basta con declarar tu propio bean `AiService`.
+To replace the service altogether, just declare your own `AiService` bean.
 
-## 🧪 Construcción desde fuente
+## 🧪 Building from source
 
 ```bash
 git clone https://github.com/adrian0511/prompt-link.git
@@ -240,20 +240,20 @@ cd prompt-link
 ./mvnw clean verify
 ```
 
-Para publicar en Maven Central (requiere la clave GPG):
+To publish to Maven Central (requires the GPG key):
 
 ```bash
-./mvnw deploy -Prelease -Dgpg.passphrase=...
+./mvnw deploy -Prelease
 ```
 
-## 📄 Licencia
+## 📄 License
 
-Este proyecto está bajo la licencia MIT. Consulta el archivo [LICENSE](LICENSE) para más detalles.
+MIT. See the [LICENSE](LICENSE) file for details.
 
-## 🤝 Contribuciones
+## 🤝 Contributing
 
-Las contribuciones son bienvenidas. Por favor, abre un issue o un pull request en GitHub.
+Contributions are welcome. Please open an issue or a pull request on GitHub.
 
 ---
 
-¡Gracias por usar Prompt Link! 🚀
+Thanks for using Prompt Link! 🚀

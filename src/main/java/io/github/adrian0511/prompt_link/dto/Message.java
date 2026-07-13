@@ -1,12 +1,12 @@
 package io.github.adrian0511.prompt_link.dto;
 
 /**
- * Un mensaje de la conversación. El {@code role} le dice al modelo quién habla: {@code system} para
- * las instrucciones de comportamiento, {@code user} para lo que escribe la persona y
- * {@code assistant} para lo que respondió el modelo en turnos anteriores.
+ * One message in the conversation. The {@code role} tells the model who is speaking: {@code system}
+ * for behaviour instructions, {@code user} for what the person writes, and {@code assistant} for
+ * what the model replied in earlier turns.
  *
- * <p>Usa los métodos de fábrica ({@link #system}, {@link #user}, {@link #assistant}) en lugar del
- * constructor para no equivocarte con el nombre del rol, que la API valida.
+ * <p>Prefer the factory methods ({@link #system}, {@link #user}, {@link #assistant}) over the
+ * constructor, so you cannot get the role name wrong — the API validates it.
  */
 public class Message {
 
@@ -21,17 +21,17 @@ public class Message {
         this.content = content;
     }
 
-    /** Instrucciones de comportamiento para el modelo. */
+    /** Behaviour instructions for the model. */
     public static Message system(String content) {
         return new Message("system", content);
     }
 
-    /** Un mensaje escrito por la persona. */
+    /** A message written by the person. */
     public static Message user(String content) {
         return new Message("user", content);
     }
 
-    /** Una respuesta previa del modelo, para reconstruir el historial de la conversación. */
+    /** An earlier reply from the model, used to rebuild the conversation history. */
     public static Message assistant(String content) {
         return new Message("assistant", content);
     }

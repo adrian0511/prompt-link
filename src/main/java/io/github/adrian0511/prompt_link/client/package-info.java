@@ -1,8 +1,8 @@
 /**
- * El cliente HTTP de la API de OpenRouter.
+ * The OpenRouter HTTP client.
  *
- * <p>Es un detalle de implementación de la librería. Para el uso normal, inyecta
- * {@link io.github.adrian0511.prompt_link.service.AiService}, que envuelve este cliente y añade la
- * validación de la configuración, la comprobación de la respuesta y el manejo de errores.
+ * <p>An implementation detail of this library. For everyday use, inject
+ * {@link io.github.adrian0511.prompt_link.service.AiService}, which wraps this client and adds
+ * configuration validation, response checking and error handling.
  */
 package io.github.adrian0511.prompt_link.client;

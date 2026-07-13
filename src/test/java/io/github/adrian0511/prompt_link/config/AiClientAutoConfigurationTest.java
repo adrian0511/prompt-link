@@ -18,9 +18,9 @@ import io.github.adrian0511.prompt_link.client.AiClient;
 import io.github.adrian0511.prompt_link.service.AiService;
 
 /**
- * Comprueba qué beans acaban en el contexto principal de la aplicación que usa la librería: que
- * estén el cliente y el servicio, que las propiedades se enlacen, que el servicio se pueda
- * sobrescribir y, sobre todo, que los beans de Feign <em>no</em> estén ahí.
+ * Checks which beans end up in the main context of the application using this library: that the
+ * client and the service are there, that the properties are bound, that the service can be
+ * overridden, and above all that Feign's beans are <em>not</em> there.
  */
 class AiClientAutoConfigurationTest {
 
@@ -32,7 +32,7 @@ class AiClientAutoConfigurationTest {
             .withPropertyValues("ai.api-key=test-key");
 
     @Test
-    void registraElClienteYElServicio() {
+    void registersTheClientAndTheService() {
         runner.run(context -> {
             assertThat(context).hasSingleBean(AiService.class);
             assertThat(context).hasSingleBean(AiProperties.class);
@@ -41,16 +41,16 @@ class AiClientAutoConfigurationTest {
     }
 
     /**
-     * Regresión del fallo de seguridad: el interceptor que añade la cabecera Authorization y el
-     * error decoder deben vivir únicamente en el contexto hijo del cliente Feign de OpenRouter.
+     * Regression for the security bug: the interceptor that adds the Authorization header and the
+     * error decoder must live only in the child context of the OpenRouter Feign client.
      *
-     * <p>Si se declaran en la autoconfiguración acaban en el contexto principal, y Feign resuelve
-     * interceptores y error decoders mirando también a los contextos ancestros: se aplicarían a
-     * TODOS los clientes Feign de la aplicación que use la librería, enviando la API key de
-     * OpenRouter a cualquier otro servicio al que esa aplicación llame.
+     * <p>Declared in the auto-configuration they end up in the main context, and Feign resolves
+     * interceptors and error decoders by also looking at ancestor contexts: they would apply to EVERY
+     * Feign client of the application using this library, sending the OpenRouter API key to any other
+     * service that application happens to call.
      */
     @Test
-    void noFiltraElInterceptorNiElErrorDecoderAlContextoPrincipal() {
+    void doesNotLeakTheInterceptorOrTheErrorDecoderIntoTheMainContext() {
         runner.run(context -> {
             assertThat(context).doesNotHaveBean(RequestInterceptor.class);
             assertThat(context).doesNotHaveBean(ErrorDecoder.class);
@@ -58,7 +58,7 @@ class AiClientAutoConfigurationTest {
     }
 
     @Test
-    void aplicaLosValoresPorDefecto() {
+    void appliesTheDefaultValues() {
         runner.run(context -> {
             AiProperties properties = context.getBean(AiProperties.class);
             assertThat(properties.getModel()).isEqualTo("openai/gpt-4o-mini");
@@ -67,11 +67,12 @@ class AiClientAutoConfigurationTest {
             assertThat(properties.getTemperature()).isNull();
             assertThat(properties.getConnectTimeout()).isEqualTo(Duration.ofSeconds(10));
             assertThat(properties.getReadTimeout()).isEqualTo(Duration.ofSeconds(60));
+            assertThat(properties.getRetry().isEnabled()).isFalse();
         });
     }
 
     @Test
-    void enlazaLasPropiedadesDeConfiguracion() {
+    void bindsTheConfigurationProperties() {
         runner.withPropertyValues(
                 "ai.model=anthropic/claude-sonnet-4",
                 "ai.max-tokens=128",
@@ -88,7 +89,7 @@ class AiClientAutoConfigurationTest {
     }
 
     @Test
-    void permiteSobrescribirElServicio() {
+    void allowsOverridingTheService() {
         runner.withUserConfiguration(CustomAiServiceConfig.class)
                 .run(context -> assertThat(context).hasSingleBean(AiService.class)
                         .getBean(AiService.class)

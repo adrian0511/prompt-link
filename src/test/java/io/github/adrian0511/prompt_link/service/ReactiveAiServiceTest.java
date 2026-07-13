@@ -33,87 +33,86 @@ import io.github.adrian0511.prompt_link.exceptions.AiClientException;
 import reactor.test.StepVerifier;
 
 /**
- * Ejercita el servicio reactivo contra un servidor HTTP real, incluido el streaming SSE.
+ * Exercises the reactive service against a real HTTP server, SSE streaming included.
  *
- * <p>Aquí se fijan los tres comportamientos que un test con mocks no vería: que los timeouts se
- * apliquen de verdad (y que sean por inactividad, no totales), que los reintentos no dupliquen texto
- * ya emitido, y que un error mandado a mitad del stream no se trague en silencio.
+ * <p>It pins down the three behaviours a mock-based test would never see: that the timeouts really
+ * apply (and that they measure inactivity, not total time), that retries never duplicate text already
+ * emitted, and that an error sent midway through the stream is not swallowed in silence.
  */
 class ReactiveAiServiceTest {
 
-    private static final String RESPUESTA_OK = """
-            {"choices":[{"message":{"role":"assistant","content":"hola"}}]}""";
+    private static final String SUCCESSFUL_RESPONSE = """
+            {"choices":[{"message":{"role":"assistant","content":"hello"}}]}""";
 
-    private static final String CUERPO_FALLO = """
+    private static final String ERROR_BODY = """
             {"error":{"message":"rate limit exceeded"}}""";
 
-    /** Tal cual lo documenta OpenRouter: el error va arriba, y el choices viene vacío. */
-    private static final String EVENTO_DE_ERROR = """
+    /** Exactly as OpenRouter documents it: the error sits at the top level, and choices comes empty. */
+    private static final String ERROR_EVENT = """
             data: {"id":"cmpl-abc","error":{"code":"server_error","message":"Provider disconnected unexpectedly"},"choices":[{"index":0,"delta":{"content":""},"finish_reason":"error"}]}
 
             """;
 
-    private static final String REINTENTOS_RAPIDOS = "ai.retry.enabled=true";
+    private static final String RETRIES_ENABLED = "ai.retry.enabled=true";
 
     private HttpServer server;
-    private final AtomicReference<Headers> cabecerasRecibidas = new AtomicReference<>();
-    private final AtomicReference<String> cuerpoRecibido = new AtomicReference<>();
-    private final AtomicInteger peticiones = new AtomicInteger();
+    private final AtomicReference<Headers> receivedHeaders = new AtomicReference<>();
+    private final AtomicReference<String> receivedBody = new AtomicReference<>();
+    private final AtomicInteger requests = new AtomicInteger();
 
     private volatile int status = 200;
-    private volatile String respuesta = RESPUESTA_OK;
-    private volatile boolean sse = false;
+    private volatile String response = SUCCESSFUL_RESPONSE;
 
-    /** Bloques SSE crudos que el servidor irá escribiendo, uno a uno, con {@link #pausa} entre ellos. */
-    private volatile List<String> guion;
+    /** Raw SSE blocks the server writes one by one, waiting {@link #pause} between them. */
+    private volatile List<String> script;
 
-    /** Si está puesto, el primer intento usa este guion y los siguientes el normal. */
-    private volatile List<String> guionDelPrimerIntento;
+    /** When set, the first attempt uses this script and later ones use the normal one. */
+    private volatile List<String> firstAttemptScript;
 
-    private volatile Duration pausa = Duration.ZERO;
+    private volatile Duration pause = Duration.ZERO;
 
-    /** Si es true, el servidor deja de escribir y no cierra: simula un servidor que se queda mudo. */
-    private volatile boolean seQuedaMudo;
+    /** When true the server stops writing and never closes: it simulates a server going silent. */
+    private volatile boolean goesSilent;
 
-    private volatile int fallosIniciales = 0;
-    private volatile int statusFallo = 429;
+    private volatile int initialFailures = 0;
+    private volatile int failureStatus = 429;
 
     private ApplicationContextRunner runner;
 
     @BeforeEach
-    void arrancaElServidor() throws IOException {
+    void startServer() throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        // Los handlers bloquean (pausas, quedarse mudo): sin un pool propio bloquearían el servidor.
+        // The handlers block (pauses, going silent): without a pool of their own they would block the
+        // server itself.
         server.setExecutor(Executors.newCachedThreadPool());
 
         HttpHandler handler = exchange -> {
-            cabecerasRecibidas.set(exchange.getRequestHeaders());
+            receivedHeaders.set(exchange.getRequestHeaders());
             try (InputStream in = exchange.getRequestBody()) {
-                cuerpoRecibido.set(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+                receivedBody.set(new String(in.readAllBytes(), StandardCharsets.UTF_8));
             }
 
-            int intento = peticiones.incrementAndGet();
-            if (intento <= fallosIniciales) {
-                responder(exchange, statusFallo, CUERPO_FALLO, "application/json");
+            int attempt = requests.incrementAndGet();
+            if (attempt <= initialFailures) {
+                respond(exchange, failureStatus, ERROR_BODY, "application/json");
                 return;
             }
 
-            List<String> aEmitir = intento == 1 && guionDelPrimerIntento != null
-                    ? guionDelPrimerIntento
-                    : guion;
-            if (aEmitir != null) {
-                emitirGuion(exchange, aEmitir);
+            List<String> toEmit = attempt == 1 && firstAttemptScript != null
+                    ? firstAttemptScript
+                    : script;
+            if (toEmit != null) {
+                emit(exchange, toEmit);
                 return;
             }
-            if (seQuedaMudo) {
-                // Cabeceras sí, cuerpo nunca: la conexión queda abierta y muda.
+            if (goesSilent) {
+                // Headers yes, body never: the connection stays open and mute.
                 exchange.getResponseHeaders().add("Content-Type", "application/json");
                 exchange.sendResponseHeaders(200, 0);
-                dormir(Duration.ofSeconds(30));
+                sleep(Duration.ofSeconds(30));
                 return;
             }
-            responder(exchange, status, respuesta,
-                    sse ? "text/event-stream" : "application/json");
+            respond(exchange, status, response, "application/json");
         };
 
         server.createContext("/chat/completions", handler);
@@ -123,280 +122,281 @@ class ReactiveAiServiceTest {
         runner = new ApplicationContextRunner()
                 .withConfiguration(AutoConfigurations.of(ReactiveAiAutoConfiguration.class))
                 .withPropertyValues(
-                        "ai.api-key=clave-secreta",
+                        "ai.api-key=secret-key",
                         "ai.url=http://127.0.0.1:" + server.getAddress().getPort());
     }
 
     @AfterEach
-    void paraElServidor() {
+    void stopServer() {
         server.stop(0);
     }
 
     // --- Streaming ---------------------------------------------------------------------------
 
     @Test
-    void emiteLosFragmentosDelStreamEnOrden() {
-        guion = List.of(
-                evento("{\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}"),
-                evento("{\"choices\":[{\"delta\":{\"content\":\"Había \"}}]}"),
-                evento("{\"choices\":[{\"delta\":{\"content\":\"una vez\"}}]}"),
-                evento("[DONE]"));
+    void emitsTheStreamFragmentsInOrder() {
+        script = List.of(
+                event("{\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}"),
+                event("{\"choices\":[{\"delta\":{\"content\":\"Once \"}}]}"),
+                event("{\"choices\":[{\"delta\":{\"content\":\"upon a time\"}}]}"),
+                event("[DONE]"));
 
         runner.run(context -> StepVerifier
-                // El primer evento solo trae el rol: no debe emitir un fragmento vacío.
-                .create(context.getBean(ReactiveAiService.class).stream("Cuéntame un cuento"))
-                .expectNext("Había ")
-                .expectNext("una vez")
+                // The first event only carries the role: it must not emit an empty fragment.
+                .create(context.getBean(ReactiveAiService.class).stream("Tell me a story"))
+                .expectNext("Once ")
+                .expectNext("upon a time")
                 .verifyComplete());
     }
 
-    /** OpenRouter manda comentarios SSE de keep-alive durante las pausas largas. No son tokens. */
+    /** OpenRouter sends SSE keep-alive comments during long pauses. They are not tokens. */
     @Test
-    void ignoraLosKeepAliveDeOpenRouter() {
-        guion = List.of(
+    void ignoresOpenRoutersKeepAlives() {
+        script = List.of(
                 ": OPENROUTER PROCESSING\n\n",
-                evento("{\"choices\":[{\"delta\":{\"content\":\"hola\"}}]}"),
+                event("{\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}"),
                 ": OPENROUTER PROCESSING\n\n",
-                evento("[DONE]"));
+                event("[DONE]"));
 
         runner.run(context -> StepVerifier
-                .create(context.getBean(ReactiveAiService.class).stream("hola"))
-                .expectNext("hola")
+                .create(context.getBean(ReactiveAiService.class).stream("hello"))
+                .expectNext("hello")
                 .verifyComplete());
     }
 
     @Test
-    void pideElStreamingALaApi() {
-        guion = List.of(evento("[DONE]"));
+    void asksTheApiForStreaming() {
+        script = List.of(event("[DONE]"));
 
         runner.run(context -> {
-            context.getBean(ReactiveAiService.class).stream("hola").blockLast();
+            context.getBean(ReactiveAiService.class).stream("hello").blockLast();
 
-            assertThat(cuerpoRecibido.get()).contains("\"stream\":true");
+            assertThat(receivedBody.get()).contains("\"stream\":true");
         });
     }
 
     @Test
-    void noPideStreamingEnLasLlamadasNormales() {
+    void doesNotAskForStreamingOnNormalCalls() {
         runner.run(context -> {
-            context.getBean(ReactiveAiService.class).generate("hola").block();
+            context.getBean(ReactiveAiService.class).generate("hello").block();
 
-            assertThat(cuerpoRecibido.get()).doesNotContain("stream");
+            assertThat(receivedBody.get()).doesNotContain("stream");
         });
     }
 
-    // --- El error que se colaba a mitad de stream --------------------------------------------
+    // --- The error that used to slip through mid-stream ---------------------------------------
 
     /**
-     * OpenRouter puede fallar <em>después</em> de haber respondido 200 y de haber emitido tokens,
-     * mandando el error dentro del stream. Ese evento trae un choices con contenido vacío, así que
-     * antes se parseaba, se filtraba como fragmento vacío y el stream terminaba con normalidad: el
-     * usuario veía la frase cortada y la aplicación no se enteraba de nada.
+     * OpenRouter can fail <em>after</em> having answered 200 and emitted tokens, sending the error
+     * inside the stream. That event carries a choices entry with empty content, so it used to parse
+     * fine, get filtered out as an empty fragment, and the stream would end normally: the user saw a
+     * sentence cut in half and the application never knew.
      */
     @Test
-    void propagaUnErrorMandadoAMitadDelStream() {
-        guion = List.of(
-                evento("{\"choices\":[{\"delta\":{\"content\":\"Había \"}}]}"),
-                EVENTO_DE_ERROR,
-                evento("[DONE]"));
+    void propagatesAnErrorSentMidStream() {
+        script = List.of(
+                event("{\"choices\":[{\"delta\":{\"content\":\"Once \"}}]}"),
+                ERROR_EVENT,
+                event("[DONE]"));
 
         runner.run(context -> StepVerifier
-                .create(context.getBean(ReactiveAiService.class).stream("Cuéntame un cuento"))
-                .expectNext("Había ")
+                .create(context.getBean(ReactiveAiService.class).stream("Tell me a story"))
+                .expectNext("Once ")
                 .verifyErrorSatisfies(e -> {
                     assertThat(e).isInstanceOf(AiClientException.class);
                     AiClientException error = (AiClientException) e;
                     assertThat(error).hasMessageContaining("Provider disconnected unexpectedly");
-                    // El code viene como texto ("server_error"), no como número.
+                    // The code arrives as text ("server_error"), not as a number.
                     assertThat(error.getStatusCode()).isEqualTo(AiClientException.STREAM_ERROR);
                 }));
     }
 
-    /**
-     * Un fallo del proveedor a mitad de stream es transitorio, y si llega antes del primer token no
-     * se ha entregado nada al usuario: reintentarlo es seguro y correcto.
-     *
-     * <p>No lo era: al no traer código numérico, el error se clasificaba como INVALID_RESPONSE y
-     * esRreintentable decía que no. La maquinaria del "solo antes del primer token" existía y la
-     * clase de error más común no llegaba nunca a usarla.
-     */
-    @Test
-    void reintentaUnErrorDeStreamQueLlegaAntesDelPrimerToken() {
-        guionDelPrimerIntento = List.of(EVENTO_DE_ERROR);
-        guion = List.of(
-                evento("{\"choices\":[{\"delta\":{\"content\":\"hola\"}}]}"),
-                evento("[DONE]"));
-
-        runner.withPropertyValues(REINTENTOS_RAPIDOS, "ai.retry.period=10ms").run(context -> {
-            StepVerifier.create(context.getBean(ReactiveAiService.class).stream("hola"))
-                    .expectNext("hola")
-                    .verifyComplete();
-
-            assertThat(peticiones).hasValue(2);
-        });
-    }
-
-    /**
-     * Pero si OpenRouter sí da un código numérico, manda su significado de siempre: un 402 (sin
-     * créditos) no se arregla repitiendo la llamada, aunque llegue por dentro del stream.
-     */
-    @Test
-    void noReintentaUnErrorDeStreamConCodigoNumericoNoReintentable() {
-        guionDelPrimerIntento = List.of("""
-                data: {"error":{"code":402,"message":"insufficient credits"},"choices":[{"delta":{"content":""}}]}
-
-                """);
-        guion = List.of(evento("[DONE]"));
-
-        runner.withPropertyValues(REINTENTOS_RAPIDOS, "ai.retry.period=10ms").run(context -> {
-            StepVerifier.create(context.getBean(ReactiveAiService.class).stream("hola"))
-                    .verifyErrorSatisfies(e -> assertThat(((AiClientException) e).getStatusCode())
-                            .isEqualTo(402));
-
-            assertThat(peticiones).hasValue(1);
-        });
-    }
-
     // --- Timeouts ----------------------------------------------------------------------------
 
-    /** Sin timeout de respuesta, un servidor que acepta y se calla dejaría el Mono esperando siempre. */
+    /** Without a response timeout, a server that accepts and goes quiet leaves the Mono waiting forever. */
     @Test
-    void abortaSiLaRespuestaNoLlegaNunca() {
-        seQuedaMudo = true;
+    void abortsWhenTheResponseNeverArrives() {
+        goesSilent = true;
 
         runner.withPropertyValues("ai.read-timeout=400ms").run(context -> StepVerifier
-                .create(context.getBean(ReactiveAiService.class).generate("hola"))
+                .create(context.getBean(ReactiveAiService.class).generate("hello"))
                 .verifyErrorSatisfies(e -> assertThat(((AiClientException) e).getStatusCode())
                         .isEqualTo(AiClientException.NETWORK_ERROR)));
     }
 
     @Test
-    void abortaSiElStreamSeQuedaMudoAMedias() {
-        guion = List.of(evento("{\"choices\":[{\"delta\":{\"content\":\"Había \"}}]}"));
-        seQuedaMudo = true;
+    void abortsWhenTheStreamGoesSilentHalfway() {
+        script = List.of(event("{\"choices\":[{\"delta\":{\"content\":\"Once \"}}]}"));
+        goesSilent = true;
 
         runner.withPropertyValues("ai.read-timeout=400ms").run(context -> StepVerifier
-                .create(context.getBean(ReactiveAiService.class).stream("hola"))
-                .expectNext("Había ")
+                .create(context.getBean(ReactiveAiService.class).stream("hello"))
+                .expectNext("Once ")
                 .verifyErrorSatisfies(e -> assertThat(((AiClientException) e).getStatusCode())
                         .isEqualTo(AiClientException.NETWORK_ERROR)));
     }
 
     /**
-     * El timeout tiene que ser por inactividad, no total: una respuesta larga y legítima que tarde
-     * más que el read-timeout en terminar de emitirse no se puede cortar en seco mientras siga
-     * llegando texto. Aquí el stream dura ~1,2s con un read-timeout de 500ms, y debe completarse.
+     * The timeout has to measure inactivity, not total time: a long, legitimate answer that takes
+     * longer than the read timeout to finish emitting cannot be cut off while text keeps arriving.
+     * Here the stream lasts ~1.2s with a 500ms read timeout, and must complete.
      */
     @Test
-    void noCortaUnStreamLentoQueSigueVivo() {
-        guion = List.of(
-                evento("{\"choices\":[{\"delta\":{\"content\":\"uno \"}}]}"),
-                evento("{\"choices\":[{\"delta\":{\"content\":\"dos \"}}]}"),
-                evento("{\"choices\":[{\"delta\":{\"content\":\"tres \"}}]}"),
-                evento("{\"choices\":[{\"delta\":{\"content\":\"cuatro\"}}]}"),
-                evento("[DONE]"));
-        pausa = Duration.ofMillis(300);
+    void doesNotCutOffASlowButLiveStream() {
+        script = List.of(
+                event("{\"choices\":[{\"delta\":{\"content\":\"one \"}}]}"),
+                event("{\"choices\":[{\"delta\":{\"content\":\"two \"}}]}"),
+                event("{\"choices\":[{\"delta\":{\"content\":\"three \"}}]}"),
+                event("{\"choices\":[{\"delta\":{\"content\":\"four\"}}]}"),
+                event("[DONE]"));
+        pause = Duration.ofMillis(300);
 
         runner.withPropertyValues("ai.read-timeout=500ms").run(context -> StepVerifier
-                .create(context.getBean(ReactiveAiService.class).stream("cuenta"))
-                .expectNext("uno ", "dos ", "tres ", "cuatro")
+                .create(context.getBean(ReactiveAiService.class).stream("count"))
+                .expectNext("one ", "two ", "three ", "four")
                 .verifyComplete());
     }
 
-    // --- Reintentos --------------------------------------------------------------------------
+    // --- Retries -----------------------------------------------------------------------------
 
     @Test
-    void porDefectoNoReintenta() {
+    void retriesNothingByDefault() {
         status = 429;
-        respuesta = CUERPO_FALLO;
+        response = ERROR_BODY;
 
         runner.run(context -> {
-            StepVerifier.create(context.getBean(ReactiveAiService.class).generate("hola"))
+            StepVerifier.create(context.getBean(ReactiveAiService.class).generate("hello"))
                     .verifyErrorSatisfies(e -> assertThat(((AiClientException) e).getStatusCode())
                             .isEqualTo(429));
 
-            assertThat(peticiones).hasValue(1);
+            assertThat(requests).hasValue(1);
         });
     }
 
     @Test
-    void reintentaGenerateCuandoSeActiva() {
-        fallosIniciales = 1;
-        statusFallo = 429;
+    void retriesGenerateWhenEnabled() {
+        initialFailures = 1;
+        failureStatus = 429;
 
-        runner.withPropertyValues(REINTENTOS_RAPIDOS, "ai.retry.period=10ms").run(context -> {
-            StepVerifier.create(context.getBean(ReactiveAiService.class).generate("hola"))
-                    .assertNext(r -> assertThat(r.getContent()).isEqualTo("hola"))
+        runner.withPropertyValues(RETRIES_ENABLED, "ai.retry.period=10ms").run(context -> {
+            StepVerifier.create(context.getBean(ReactiveAiService.class).generate("hello"))
+                    .assertNext(r -> assertThat(r.getContent()).isEqualTo("hello"))
                     .verifyComplete();
 
-            assertThat(peticiones).hasValue(2);
+            assertThat(requests).hasValue(2);
         });
     }
 
-    /** Un fallo antes del primer token sí se puede reintentar: el usuario no ha visto nada aún. */
+    /** A failure before the first token can be retried: the user has not seen anything yet. */
     @Test
-    void reintentaUnStreamQueFallaAntesDelPrimerToken() {
-        fallosIniciales = 1;
-        statusFallo = 429;
-        guion = List.of(
-                evento("{\"choices\":[{\"delta\":{\"content\":\"hola\"}}]}"),
-                evento("[DONE]"));
+    void retriesAStreamThatFailsBeforeTheFirstToken() {
+        initialFailures = 1;
+        failureStatus = 429;
+        script = List.of(
+                event("{\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}"),
+                event("[DONE]"));
 
-        runner.withPropertyValues(REINTENTOS_RAPIDOS, "ai.retry.period=10ms").run(context -> {
-            StepVerifier.create(context.getBean(ReactiveAiService.class).stream("hola"))
-                    .expectNext("hola")
+        runner.withPropertyValues(RETRIES_ENABLED, "ai.retry.period=10ms").run(context -> {
+            StepVerifier.create(context.getBean(ReactiveAiService.class).stream("hello"))
+                    .expectNext("hello")
                     .verifyComplete();
 
-            assertThat(peticiones).hasValue(2);
+            assertThat(requests).hasValue(2);
         });
     }
 
     /**
-     * Pero si ya se emitieron tokens, reintentar reenviaría la respuesta desde el principio y el
-     * usuario vería el texto duplicado en pantalla. Se falla, y no se reintenta.
+     * A provider failure midway through a stream is transient, and when it lands before the first
+     * token nothing has been handed to the user: retrying it is both safe and correct.
+     *
+     * <p>It used not to be: carrying no numeric code, the error was classified as INVALID_RESPONSE and
+     * isRetryable said no. The whole "only before the first token" machinery existed, and the most
+     * common kind of error never got to use it.
      */
     @Test
-    void noReintentaUnStreamQueYaEmpezoAEmitir() {
-        guion = List.of(
-                evento("{\"choices\":[{\"delta\":{\"content\":\"Había \"}}]}"),
-                EVENTO_DE_ERROR);
+    void retriesAStreamErrorThatArrivesBeforeTheFirstToken() {
+        firstAttemptScript = List.of(ERROR_EVENT);
+        script = List.of(
+                event("{\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}"),
+                event("[DONE]"));
 
-        runner.withPropertyValues(REINTENTOS_RAPIDOS, "ai.retry.period=10ms").run(context -> {
-            StepVerifier.create(context.getBean(ReactiveAiService.class).stream("hola"))
-                    .expectNext("Había ")
-                    .verifyError(AiClientException.class);
+        runner.withPropertyValues(RETRIES_ENABLED, "ai.retry.period=10ms").run(context -> {
+            StepVerifier.create(context.getBean(ReactiveAiService.class).stream("hello"))
+                    .expectNext("hello")
+                    .verifyComplete();
 
-            assertThat(peticiones).hasValue(1);
+            assertThat(requests).hasValue(2);
         });
     }
 
-    // --- Lo demás ----------------------------------------------------------------------------
+    /**
+     * But when OpenRouter does give a numeric code, it keeps its usual meaning: a 402 (out of credits)
+     * is not fixed by repeating the call, even if it arrives from inside the stream.
+     */
+    @Test
+    void doesNotRetryAStreamErrorWithANonRetryableNumericCode() {
+        firstAttemptScript = List.of("""
+                data: {"error":{"code":402,"message":"insufficient credits"},"choices":[{"delta":{"content":""}}]}
+
+                """);
+        script = List.of(event("[DONE]"));
+
+        runner.withPropertyValues(RETRIES_ENABLED, "ai.retry.period=10ms").run(context -> {
+            StepVerifier.create(context.getBean(ReactiveAiService.class).stream("hello"))
+                    .verifyErrorSatisfies(e -> assertThat(((AiClientException) e).getStatusCode())
+                            .isEqualTo(402));
+
+            assertThat(requests).hasValue(1);
+        });
+    }
+
+    /**
+     * Once tokens have been emitted, retrying would resend the answer from the beginning and the user
+     * would see the text duplicated on screen. It fails, and it is not retried.
+     */
+    @Test
+    void doesNotRetryAStreamThatAlreadyStartedEmitting() {
+        script = List.of(
+                event("{\"choices\":[{\"delta\":{\"content\":\"Once \"}}]}"),
+                ERROR_EVENT);
+
+        runner.withPropertyValues(RETRIES_ENABLED, "ai.retry.period=10ms").run(context -> {
+            StepVerifier.create(context.getBean(ReactiveAiService.class).stream("hello"))
+                    .expectNext("Once ")
+                    .verifyError(AiClientException.class);
+
+            assertThat(requests).hasValue(1);
+        });
+    }
+
+    // --- Everything else ----------------------------------------------------------------------
 
     @Test
-    void devuelveLaRespuestaCompletaSinStreaming() {
+    void returnsTheWholeAnswerWithoutStreaming() {
         runner.run(context -> StepVerifier
-                .create(context.getBean(ReactiveAiService.class).generate("¿qué tal?"))
-                .assertNext(respuesta -> assertThat(respuesta.getContent()).isEqualTo("hola"))
+                .create(context.getBean(ReactiveAiService.class).generate("how are you?"))
+                .assertNext(answer -> assertThat(answer.getContent()).isEqualTo("hello"))
                 .verifyComplete());
     }
 
     @Test
-    void autenticaLaLlamada() {
+    void authenticatesTheCall() {
         runner.run(context -> {
-            context.getBean(ReactiveAiService.class).generate("hola").block();
+            context.getBean(ReactiveAiService.class).generate("hello").block();
 
-            assertThat(cabecerasRecibidas.get().getFirst("Authorization"))
-                    .isEqualTo("Bearer clave-secreta");
+            assertThat(receivedHeaders.get().getFirst("Authorization"))
+                    .isEqualTo("Bearer secret-key");
         });
     }
 
+    /** The same error contract as the blocking service: status and body intact. */
     @Test
-    void traduceLosErroresDeLaApiConservandoStatusYCuerpo() {
+    void translatesApiErrorsPreservingStatusAndBody() {
         status = 429;
-        respuesta = "{\"error\":{\"message\":\"rate limit\"}}";
+        response = "{\"error\":{\"message\":\"rate limit\"}}";
 
         runner.run(context -> StepVerifier
-                .create(context.getBean(ReactiveAiService.class).generate("hola"))
+                .create(context.getBean(ReactiveAiService.class).generate("hello"))
                 .verifyErrorSatisfies(e -> {
                     assertThat(e).isInstanceOf(AiClientException.class);
                     AiClientException error = (AiClientException) e;
@@ -406,90 +406,90 @@ class ReactiveAiServiceTest {
     }
 
     @Test
-    void fallaConMensajeClaroSiFaltaLaApiKey() {
+    void failsWithAClearMessageWhenTheApiKeyIsMissing() {
         new ApplicationContextRunner()
                 .withConfiguration(AutoConfigurations.of(ReactiveAiAutoConfiguration.class))
                 .withPropertyValues("ai.url=http://127.0.0.1:" + server.getAddress().getPort())
                 .run(context -> StepVerifier
-                        .create(context.getBean(ReactiveAiService.class).generate("hola"))
+                        .create(context.getBean(ReactiveAiService.class).generate("hello"))
                         .verifyErrorSatisfies(e -> assertThat(((AiClientException) e).getStatusCode())
                                 .isEqualTo(AiClientException.CONFIGURATION_ERROR)));
     }
 
     /**
-     * Regresión de la fuga de la API key, en su versión reactiva: si la cabecera Authorization se
-     * añadiera al WebClient.Builder compartido de la aplicación en vez de a una copia propia, la
-     * clave viajaría a todos los WebClient de quien use la librería.
+     * Regression of the API key leak, in its reactive flavour: if the Authorization header were added
+     * to the application's shared WebClient.Builder instead of to a copy of our own, the key would
+     * travel to every WebClient of whoever uses this library.
      */
     @Test
-    void noFiltraLaApiKeyAlWebClientDeLaAplicacion() {
-        runner.withUserConfiguration(BuilderCompartido.class).run(context -> {
-            WebClient otroCliente = context.getBean(WebClient.Builder.class)
+    void doesNotLeakTheApiKeyToTheApplicationsWebClient() {
+        runner.withUserConfiguration(SharedBuilder.class).run(context -> {
+            WebClient otherClient = context.getBean(WebClient.Builder.class)
                     .baseUrl("http://127.0.0.1:" + server.getAddress().getPort())
                     .build();
 
-            otroCliente.get().uri("/ping").retrieve().bodyToMono(String.class).block();
+            otherClient.get().uri("/ping").retrieve().bodyToMono(String.class).block();
 
-            Headers headers = cabecerasRecibidas.get();
+            Headers headers = receivedHeaders.get();
             assertThat(headers.getFirst("Authorization")).isNull();
-            assertThat(headers.toString()).doesNotContain("clave-secreta");
+            assertThat(headers.toString()).doesNotContain("secret-key");
         });
     }
 
     @Test
-    void noSeActivaSinWebFluxEnElClasspath() {
+    void doesNotActivateWithoutWebFluxOnTheClasspath() {
         runner.withClassLoader(new FilteredClassLoader(WebClient.class))
                 .run(context -> assertThat(context).doesNotHaveBean(ReactiveAiService.class));
     }
 
-    // --- Utilidades del servidor -------------------------------------------------------------
+    // --- Server helpers -----------------------------------------------------------------------
 
-    private static String evento(String json) {
+    private static String event(String json) {
         return "data: " + json + "\n\n";
     }
 
-    private void emitirGuion(HttpExchange exchange, List<String> bloques) throws IOException {
+    private void emit(HttpExchange exchange, List<String> blocks) throws IOException {
         exchange.getResponseHeaders().add("Content-Type", "text/event-stream");
         exchange.sendResponseHeaders(200, 0);
 
         OutputStream out = exchange.getResponseBody();
-        for (String bloque : bloques) {
-            dormir(pausa);
-            out.write(bloque.getBytes(StandardCharsets.UTF_8));
+        for (String block : blocks) {
+            sleep(pause);
+            out.write(block.getBytes(StandardCharsets.UTF_8));
             out.flush();
         }
 
-        if (seQuedaMudo) {
-            dormir(Duration.ofSeconds(30));
+        if (goesSilent) {
+            sleep(Duration.ofSeconds(30));
         }
         out.close();
     }
 
-    private static void responder(HttpExchange exchange, int status, String cuerpo, String tipo)
+    private static void respond(HttpExchange exchange, int status, String body, String contentType)
             throws IOException {
-        byte[] bytes = cuerpo.getBytes(StandardCharsets.UTF_8);
-        exchange.getResponseHeaders().add("Content-Type", tipo);
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().add("Content-Type", contentType);
         exchange.sendResponseHeaders(status, bytes.length);
         try (OutputStream out = exchange.getResponseBody()) {
             out.write(bytes);
         }
     }
 
-    private static void dormir(Duration duracion) {
-        if (duracion.isZero() || duracion.isNegative()) {
+    private static void sleep(Duration duration) {
+        if (duration.isZero() || duration.isNegative()) {
             return;
         }
         try {
-            Thread.sleep(duracion.toMillis());
+            Thread.sleep(duration.toMillis());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
     }
 
     @Configuration(proxyBeanMethods = false)
-    static class BuilderCompartido {
+    static class SharedBuilder {
 
-        /** El builder que compartiría la aplicación con todos sus WebClient. */
+        /** The builder an application would share across all its WebClients. */
         @Bean
         WebClient.Builder webClientBuilder() {
             return WebClient.builder();

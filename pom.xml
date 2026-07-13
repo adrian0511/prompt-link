@@ -14,7 +14,7 @@
 	<artifactId>prompt-link</artifactId>
 	<version>1.1.0</version>
 	<name>prompt-link</name>
-	<description>Cliente Java para consumir IA generativa a través de OpenRouter con auto-configuración Spring Boot</description>
+	<description>Java client for generative AI through OpenRouter, with Spring Boot auto-configuration and token streaming</description>
 	<url>https://github.com/adrian0511/prompt-link</url>
 
 	<licenses>
@@ -42,13 +42,13 @@
 	<properties>
 		<java.version>21</java.version>
 		<spring-cloud.version>2025.1.1</spring-cloud.version>
-		<!-- Se sobrescribe con -Dgpg.keyname=... al firmar la release -->
+		<!-- Override with -Dgpg.keyname=... when signing a release -->
 		<gpg.keyname>72C3A6ED78037287AB7220405F87E1113C85D94D</gpg.keyname>
 	</properties>
 
 	<dependencies>
 
-		<!-- La versión la gestiona el BOM de Spring Boot: no fijarla aquí. -->
+		<!-- The version is managed by Spring Boot's BOM: do not pin it here. -->
 		<dependency>
 			<groupId>com.fasterxml.jackson.core</groupId>
 			<artifactId>jackson-databind</artifactId>
@@ -65,10 +65,10 @@
 		</dependency>
 
 		<!--
-			El soporte reactivo (ReactiveAiService, streaming de tokens) es opcional: quien use la
-			librería en una aplicación MVC no tiene por qué arrastrar WebFlux ni reactor-netty. Su
-			auto-configuración solo se activa si WebClient está en el classpath, así que basta con
-			que el consumidor añada spring-boot-starter-webflux para habilitarlo.
+			Reactive support (ReactiveAiService, token streaming) is optional: an application on MVC
+			has no reason to drag in WebFlux or reactor-netty. Its auto-configuration only activates
+			when WebClient is on the classpath, so consumers enable it simply by adding
+			spring-boot-starter-webflux themselves.
 		-->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
@@ -119,17 +119,17 @@
 
 	<profiles>
 		<!--
-			Publicación en Maven Central. Aislado en un profile porque la firma GPG y la generación
-			de javadoc no deben ejecutarse en un `mvn clean install` normal ni en CI: romperían el
-			build en cualquier máquina sin la clave privada.
+			Publishing to Maven Central. Kept in a profile because GPG signing and javadoc generation
+			must not run on a plain `mvn clean install` or in CI: they would break the build on any
+			machine without the private key.
 
-			Uso: mvn deploy -Prelease -Dgpg.passphrase=...
+			Usage: mvn deploy -Prelease
 		-->
 		<profile>
 			<id>release</id>
 			<build>
 				<plugins>
-					<!-- Fuentes -->
+					<!-- Sources -->
 					<plugin>
 						<groupId>org.apache.maven.plugins</groupId>
 						<artifactId>maven-source-plugin</artifactId>
@@ -151,9 +151,9 @@
 						<version>3.12.0</version>
 						<configuration>
 							<!--
-								Valida la sintaxis, el HTML y las referencias del javadoc, pero no
-								exige comentar getters, setters ni constructores triviales: rellenar
-								eso solo añadiría ruido para el que lee.
+								Validates javadoc syntax, HTML and references, but does not demand a
+								comment on every getter, setter or trivial constructor: filling those
+								in would only add noise for the reader.
 							-->
 							<doclint>all,-missing</doclint>
 						</configuration>
@@ -167,7 +167,7 @@
 						</executions>
 					</plugin>
 
-					<!-- Firma GPG. El ejecutable se resuelve del PATH: no hardcodear rutas. -->
+					<!-- GPG signing. The executable is resolved from PATH: never hardcode a path. -->
 					<plugin>
 						<groupId>org.apache.maven.plugins</groupId>
 						<artifactId>maven-gpg-plugin</artifactId>
@@ -190,7 +190,7 @@
 						</configuration>
 					</plugin>
 
-					<!-- Despliegue a Central -->
+					<!-- Deployment to Central -->
 					<plugin>
 						<groupId>org.sonatype.central</groupId>
 						<artifactId>central-publishing-maven-plugin</artifactId>
