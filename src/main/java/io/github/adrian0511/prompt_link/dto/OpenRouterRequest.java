@@ -2,15 +2,26 @@ package io.github.adrian0511.prompt_link.dto;
 
 import java.util.List;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+/**
+ * El cuerpo que se envía a {@code POST /chat/completions}.
+ *
+ * <p>Los campos nulos se omiten al serializar: así, si no configuras {@code temperature}, no se
+ * manda y cada modelo aplica su propio valor por defecto, que es lo que se espera.
+ */
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public class OpenRouterRequest {
 
     private String model;
     private List<Message> messages;
 
+    /** La API espera snake_case; el resto de campos coinciden con el nombre Java. */
     @JsonProperty("max_tokens")
     private int maxTokens;
+
+    private Double temperature;
 
     public OpenRouterRequest() {
     }
@@ -43,6 +54,14 @@ public class OpenRouterRequest {
 
     public void setMaxTokens(int maxTokens) {
         this.maxTokens = maxTokens;
+    }
+
+    public Double getTemperature() {
+        return temperature;
+    }
+
+    public void setTemperature(Double temperature) {
+        this.temperature = temperature;
     }
 
 }
