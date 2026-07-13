@@ -4,20 +4,28 @@
 [![Java Version](https://img.shields.io/badge/Java-21+-blue.svg)](https://adoptium.net/)
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.adrian0511/prompt-link.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/io.github.adrian0511/prompt-link)
 
-**Prompt Link** es un cliente Java reutilizable para consumir IA generativa a través de OpenRouter, con auto‑configuración para Spring Boot. Permite integrar modelos como GPT-4, GPT-3.5, Claude, etc., en tus aplicaciones de forma sencilla y con manejo de errores personalizado.
+**Prompt Link** es un cliente Java reutilizable para consumir IA generativa a través de OpenRouter, con auto‑configuración para Spring Boot. Permite integrar modelos como GPT, Claude, Llama, etc., en tus aplicaciones de forma sencilla y con manejo de errores tipado.
 
 ## ✨ Características
 
 - **Integración con OpenRouter** – Soporta todos los modelos disponibles.
 - **Auto‑configuración Spring Boot** – Solo añade la dependencia; **no necesitas `@EnableFeignClients`**.
-- **Cliente Feign** – Código declarativo y fácil de probar.
-- **Manejo de errores unificado** – `AiClientException` cubre tanto errores HTTP (4xx/5xx) como errores de red (timeouts, DNS, etc.) con `statusCode = -1` para los de red.
-- **Flexibilidad** – Permite sobrescribir beans y propiedades según necesidades.
+- **Cliente Feign aislado** – Su interceptor y su error decoder viven solo en el contexto del cliente de OpenRouter, así que **tu API key nunca se filtra a otros clientes Feign** de tu aplicación.
+- **Manejo de errores tipado** – `AiClientException` distingue errores HTTP, de red, de respuesta y de configuración.
+- **Conversaciones multi‑turno** – System prompt e historial de mensajes.
+- **Timeouts configurables** – Con valores por defecto pensados para LLM.
+
+## ⚠️ Actualiza desde 1.0.2
+
+La 1.0.2 tiene dos fallos serios, ambos corregidos en 1.0.3:
+
+- El interceptor que añade `Authorization: Bearer <tu-api-key>` se registraba en el contexto principal, así que Feign lo aplicaba a **todos** los clientes Feign de tu aplicación: la API key de OpenRouter viajaba a cualquier otro servicio que llamases por Feign.
+- Todos los errores HTTP (401, 429, 402…) llegaban con `statusCode = -1` y `errorBody = null`, indistinguibles de un error de red.
 
 ## 📋 Requisitos
 
-- Java 17 o superior
-- Spring Boot 3.2.x (compatible con Spring Cloud 2023.0.x)
+- Java 21 o superior
+- Spring Boot 4.0.x (compatible con Spring Cloud 2025.1.x)
 - Maven 3.6+
 
 ## 🚀 Instalación
@@ -28,36 +36,38 @@
 <dependency>
     <groupId>io.github.adrian0511</groupId>
     <artifactId>prompt-link</artifactId>
-    <version>1.0.2</version>
+    <version>1.0.3</version>
 </dependency>
 ```
 
-Gradle
+### Gradle
 
 ```groovy
-implementation 'io.github.adrian0511:prompt-link:1.0.2'
+implementation 'io.github.adrian0511:prompt-link:1.0.3'
 ```
 
-⚙️ Configuración
+## ⚙️ Configuración
 
-En tu archivo application.yml (o application.properties):
+En tu `application.yml` (o `application.properties`):
 
 ```yaml
 ai:
-  api-key: ${OPENROUTER_API_KEY}   # Nunca hardcodees la clave
-  host: http://localhost:8080       # URL de tu aplicación (usada en header HTTP-Referer)
+  api-key: ${OPENROUTER_API_KEY}   # Obligatoria. Nunca la hardcodees.
   model: openai/gpt-4o-mini         # Modelo a utilizar
   max-tokens: 5000                  # Máximo de tokens en la respuesta
+  temperature: 0.7                  # Opcional; si se omite, se usa el default del modelo
   url: https://openrouter.ai/api/v1 # Base URL de OpenRouter (no incluyas /chat/completions)
+  host: http://localhost:8080       # URL de tu app (cabecera HTTP-Referer, para atribución)
+  title: Spring AI Client           # Nombre de tu app (cabecera X-Title)
+  connect-timeout: 10s              # Timeout de conexión
+  read-timeout: 60s                 # Timeout de lectura; súbelo con modelos grandes
 ```
 
-Importante: Mantén tu API key en variables de entorno o en un secreto de tu plataforma.
+Solo `api-key` es obligatoria; el resto tiene los valores por defecto de arriba. Mantén tu clave en variables de entorno o en un secreto de tu plataforma.
 
-📝 Uso básico
+## 📝 Uso básico
 
-Ya no necesitas añadir @EnableFeignClients. La librería se encarga automáticamente de registrar los beans necesarios.
-
-Inyecta AiService en tu controlador o servicio:
+No necesitas `@EnableFeignClients`. Inyecta `AiService` directamente:
 
 ```java
 @RestController
@@ -71,44 +81,64 @@ public class ChatController {
 
     @GetMapping("/ask")
     public String ask(@RequestParam String prompt) {
-        try {
-            AiResponse response = aiService.generate(prompt);
-            return response.getContent();
-        } catch (AiClientException e) {
-            // Maneja el error (log, retorno amigable, etc.)
-            if (e.getStatusCode() == -1) {
-                return "Error de red: " + e.getMessage();
-            }
-            return "Error HTTP " + e.getStatusCode() + ": " + e.getErrorBody();
-        }
+        return aiService.generate(prompt).getContent();
     }
 }
 ```
 
-🧩 Manejo de errores
+### System prompt y conversaciones multi‑turno
 
-La librería lanza AiClientException cuando ocurre un error en la llamada a OpenRouter. Puedes capturarla globalmente con @ControllerAdvice:
+```java
+// Con system prompt
+AiResponse response = aiService.generate("Eres un experto en Java conciso.", "¿Qué es un record?");
+
+// Conversación completa, manteniendo el historial entre turnos
+List<Message> conversacion = List.of(
+        Message.system("Eres un asistente de soporte técnico."),
+        Message.user("Mi aplicación no arranca."),
+        Message.assistant("¿Qué error muestra el log?"),
+        Message.user("NoSuchBeanDefinitionException"));
+
+AiResponse response = aiService.generate(conversacion);
+```
+
+## 🧩 Manejo de errores
+
+`AiService` lanza `AiClientException` ante cualquier fallo. El `statusCode` te dice qué pasó:
+
+| `statusCode` | Constante | Significado |
+| --- | --- | --- |
+| `> 0` | – | Error HTTP de la API (401, 402, 429, 5xx…). `getErrorBody()` trae el cuerpo. |
+| `-1` | `NETWORK_ERROR` | La llamada no llegó a completarse: timeout, DNS, conexión rechazada. |
+| `-2` | `INVALID_RESPONSE` | La API respondió 200 pero sin `choices` o sin contenido utilizable. |
+| `-3` | `CONFIGURATION_ERROR` | Falta `ai.api-key`. |
+
+Puedes usar `isHttpError()` como atajo para el primer caso, y capturarla globalmente con `@RestControllerAdvice`:
 
 ```java
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
     @ExceptionHandler(AiClientException.class)
-    public ResponseEntity<ErrorResponse> handleAiClientException(AiClientException ex) {
-        ErrorResponse error = new ErrorResponse(ex.getMessage(), ex.getStatusCode());
-        return ResponseEntity.status(ex.getStatusCode() == -1 ? 503 : ex.getStatusCode())
-                             .body(error);
+    public ResponseEntity<String> handleAiClientException(AiClientException ex) {
+        HttpStatus status = ex.isHttpError()
+                ? HttpStatus.valueOf(ex.getStatusCode())
+                : HttpStatus.SERVICE_UNAVAILABLE;
+
+        return ResponseEntity.status(status).body(ex.getMessage());
     }
 }
 ```
 
-🛠️ Personalización avanzada
+## 🛠️ Personalización avanzada
 
-La librería expone beans que puedes sobrescribir usando @ConditionalOnMissingBean. Por ejemplo, para cambiar los headers enviados:
+Todos los beans de la librería usan `@ConditionalOnMissingBean`, así que puedes sustituirlos por los tuyos.
+
+Para cambiar los beans **de Feign** (interceptor, error decoder, timeouts), decláralos en una clase de configuración del cliente, no en una `@Configuration` normal — si los pones en el contexto principal, Feign los aplicará a todos los clientes de tu aplicación:
 
 ```java
-@Configuration
-public class CustomFeignConfig {
+// Sin @Configuration: Spring Cloud la carga solo en el contexto de este cliente
+public class MiFeignConfig {
 
     @Bean
     public RequestInterceptor customInterceptor(AiProperties properties) {
@@ -120,21 +150,32 @@ public class CustomFeignConfig {
 }
 ```
 
-🧪 Construcción desde fuente
+```java
+@FeignClient(name = "openrouter", url = "${ai.url}", configuration = MiFeignConfig.class)
+public interface MiAiClient extends AiClient { }
+```
 
-Clona el repositorio y ejecuta:
+Para sustituir el servicio entero, basta con declarar tu propio bean `AiService`.
+
+## 🧪 Construcción desde fuente
 
 ```bash
 git clone https://github.com/adrian0511/prompt-link.git
 cd prompt-link
-mvn clean install
+./mvnw clean verify
 ```
 
-📄 Licencia
+Para publicar en Maven Central (requiere la clave GPG):
 
-Este proyecto está bajo la licencia MIT. Consulta el archivo LICENSE para más detalles.
+```bash
+./mvnw deploy -Prelease -Dgpg.passphrase=...
+```
 
-🤝 Contribuciones
+## 📄 Licencia
+
+Este proyecto está bajo la licencia MIT. Consulta el archivo [LICENSE](LICENSE) para más detalles.
+
+## 🤝 Contribuciones
 
 Las contribuciones son bienvenidas. Por favor, abre un issue o un pull request en GitHub.
 
