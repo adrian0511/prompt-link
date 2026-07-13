@@ -41,7 +41,7 @@
 
 	<properties>
 		<java.version>21</java.version>
-		<spring-cloud.version>2025.1.1</spring-cloud.version>
+		<spring-cloud.version>2025.1.2</spring-cloud.version>
 		<!-- Override with -Dgpg.keyname=... when signing a release -->
 		<gpg.keyname>72C3A6ED78037287AB7220405F87E1113C85D94D</gpg.keyname>
 	</properties>
