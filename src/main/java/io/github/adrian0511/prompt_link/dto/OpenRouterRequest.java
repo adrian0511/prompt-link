@@ -23,6 +23,9 @@ public class OpenRouterRequest {
 
     private Double temperature;
 
+    /** Si es {@code true}, la respuesta llega como eventos SSE en vez de como un cuerpo único. */
+    private Boolean stream;
+
     public OpenRouterRequest() {
     }
 
@@ -62,6 +65,14 @@ public class OpenRouterRequest {
 
     public void setTemperature(Double temperature) {
         this.temperature = temperature;
+    }
+
+    public Boolean getStream() {
+        return stream;
+    }
+
+    public void setStream(Boolean stream) {
+        this.stream = stream;
     }
 
 }

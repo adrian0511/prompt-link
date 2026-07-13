@@ -12,6 +12,7 @@
 - **Auto‑configuración Spring Boot** – Solo añade la dependencia; **no necesitas `@EnableFeignClients`**.
 - **Cliente Feign aislado** – Su interceptor y su error decoder viven solo en el contexto del cliente de OpenRouter, así que **tu API key nunca se filtra a otros clientes Feign** de tu aplicación.
 - **Manejo de errores tipado** – `AiClientException` distingue errores HTTP, de red, de respuesta y de configuración.
+- **Streaming de tokens** – `Flux<String>` sobre WebFlux: el texto llega según se genera.
 - **Conversaciones multi‑turno** – System prompt e historial de mensajes.
 - **Timeouts configurables** – Con valores por defecto pensados para LLM.
 
@@ -36,14 +37,14 @@ La 1.0.2 tiene dos fallos serios, ambos corregidos en 1.0.3:
 <dependency>
     <groupId>io.github.adrian0511</groupId>
     <artifactId>prompt-link</artifactId>
-    <version>1.0.3</version>
+    <version>1.1.0</version>
 </dependency>
 ```
 
 ### Gradle
 
 ```groovy
-implementation 'io.github.adrian0511:prompt-link:1.0.3'
+implementation 'io.github.adrian0511:prompt-link:1.1.0'
 ```
 
 ## ⚙️ Configuración
@@ -100,6 +101,49 @@ public class ChatController {
     }
 }
 ```
+
+### ⚡ Streaming de tokens (WebFlux)
+
+Si tu aplicación es reactiva, puedes recibir el texto **según el modelo lo genera**, en vez de esperar a la respuesta completa. Es lo que hace que un chat se sienta vivo.
+
+Añade WebFlux a *tu* aplicación (en la librería es una dependencia opcional, así que si no lo haces no arrastras reactor-netty):
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-webflux</artifactId>
+</dependency>
+```
+
+Con eso, `ReactiveAiService` se autoconfigura solo:
+
+```java
+@RestController
+public class ChatController {
+
+    private final ReactiveAiService aiService;
+
+    public ChatController(ReactiveAiService aiService) {
+        this.aiService = aiService;
+    }
+
+    // Los tokens llegan al navegador según se generan
+    @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<String> stream(@RequestParam String prompt) {
+        return aiService.stream(prompt);
+    }
+
+    // Y la respuesta completa, sin bloquear ningún hilo
+    @GetMapping("/ask")
+    public Mono<String> ask(@RequestParam String prompt) {
+        return aiService.generate(prompt).map(AiResponse::getContent);
+    }
+}
+```
+
+`stream(...)` acepta las mismas variantes que `generate(...)`: prompt suelto, system + user, o una `List<Message>` con el historial. Los errores son **idénticos** a los del servicio bloqueante (`AiClientException` con el mismo `statusCode`), así que no tienes que aprender dos modelos de errores.
+
+Los fragmentos no tienen un tamaño garantizado — pueden ser una palabra, una sílaba o un signo de puntuación. Concaténalos para reconstruir la respuesta.
 
 ### System prompt y conversaciones multi‑turno
 
