@@ -66,6 +66,10 @@ class ReactiveAiServiceTest {
 
     /** Bloques SSE crudos que el servidor irá escribiendo, uno a uno, con {@link #pausa} entre ellos. */
     private volatile List<String> guion;
+
+    /** Si está puesto, el primer intento usa este guion y los siguientes el normal. */
+    private volatile List<String> guionDelPrimerIntento;
+
     private volatile Duration pausa = Duration.ZERO;
 
     /** Si es true, el servidor deja de escribir y no cierra: simula un servidor que se queda mudo. */
@@ -88,12 +92,17 @@ class ReactiveAiServiceTest {
                 cuerpoRecibido.set(new String(in.readAllBytes(), StandardCharsets.UTF_8));
             }
 
-            if (peticiones.incrementAndGet() <= fallosIniciales) {
+            int intento = peticiones.incrementAndGet();
+            if (intento <= fallosIniciales) {
                 responder(exchange, statusFallo, CUERPO_FALLO, "application/json");
                 return;
             }
-            if (guion != null) {
-                emitirGuion(exchange);
+
+            List<String> aEmitir = intento == 1 && guionDelPrimerIntento != null
+                    ? guionDelPrimerIntento
+                    : guion;
+            if (aEmitir != null) {
+                emitirGuion(exchange, aEmitir);
                 return;
             }
             if (seQuedaMudo) {
@@ -199,9 +208,53 @@ class ReactiveAiServiceTest {
                     AiClientException error = (AiClientException) e;
                     assertThat(error).hasMessageContaining("Provider disconnected unexpectedly");
                     // El code viene como texto ("server_error"), no como número.
-                    assertThat(error.getStatusCode())
-                            .isEqualTo(AiClientException.INVALID_RESPONSE);
+                    assertThat(error.getStatusCode()).isEqualTo(AiClientException.STREAM_ERROR);
                 }));
+    }
+
+    /**
+     * Un fallo del proveedor a mitad de stream es transitorio, y si llega antes del primer token no
+     * se ha entregado nada al usuario: reintentarlo es seguro y correcto.
+     *
+     * <p>No lo era: al no traer código numérico, el error se clasificaba como INVALID_RESPONSE y
+     * esRreintentable decía que no. La maquinaria del "solo antes del primer token" existía y la
+     * clase de error más común no llegaba nunca a usarla.
+     */
+    @Test
+    void reintentaUnErrorDeStreamQueLlegaAntesDelPrimerToken() {
+        guionDelPrimerIntento = List.of(EVENTO_DE_ERROR);
+        guion = List.of(
+                evento("{\"choices\":[{\"delta\":{\"content\":\"hola\"}}]}"),
+                evento("[DONE]"));
+
+        runner.withPropertyValues(REINTENTOS_RAPIDOS, "ai.retry.period=10ms").run(context -> {
+            StepVerifier.create(context.getBean(ReactiveAiService.class).stream("hola"))
+                    .expectNext("hola")
+                    .verifyComplete();
+
+            assertThat(peticiones).hasValue(2);
+        });
+    }
+
+    /**
+     * Pero si OpenRouter sí da un código numérico, manda su significado de siempre: un 402 (sin
+     * créditos) no se arregla repitiendo la llamada, aunque llegue por dentro del stream.
+     */
+    @Test
+    void noReintentaUnErrorDeStreamConCodigoNumericoNoReintentable() {
+        guionDelPrimerIntento = List.of("""
+                data: {"error":{"code":402,"message":"insufficient credits"},"choices":[{"delta":{"content":""}}]}
+
+                """);
+        guion = List.of(evento("[DONE]"));
+
+        runner.withPropertyValues(REINTENTOS_RAPIDOS, "ai.retry.period=10ms").run(context -> {
+            StepVerifier.create(context.getBean(ReactiveAiService.class).stream("hola"))
+                    .verifyErrorSatisfies(e -> assertThat(((AiClientException) e).getStatusCode())
+                            .isEqualTo(402));
+
+            assertThat(peticiones).hasValue(1);
+        });
     }
 
     // --- Timeouts ----------------------------------------------------------------------------
@@ -395,12 +448,12 @@ class ReactiveAiServiceTest {
         return "data: " + json + "\n\n";
     }
 
-    private void emitirGuion(HttpExchange exchange) throws IOException {
+    private void emitirGuion(HttpExchange exchange, List<String> bloques) throws IOException {
         exchange.getResponseHeaders().add("Content-Type", "text/event-stream");
         exchange.sendResponseHeaders(200, 0);
 
         OutputStream out = exchange.getResponseBody();
-        for (String bloque : guion) {
+        for (String bloque : bloques) {
             dormir(pausa);
             out.write(bloque.getBytes(StandardCharsets.UTF_8));
             out.flush();

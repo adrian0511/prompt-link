@@ -24,6 +24,12 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
   total: una respuesta larga no se corta mientras siga llegando texto.
 - En `stream(...)` solo se reintenta antes del primer token: una vez emitido texto, reintentar
   reenviaría la respuesta desde el principio y el usuario la vería duplicada.
+- Nueva constante `AiClientException.STREAM_ERROR` para los fallos a mitad de stream sin código HTTP
+  numérico. Son transitorios, así que se reintentan si llegan antes del primer token. Cuando
+  OpenRouter sí da un código numérico se respeta su significado: un 402 no se reintenta.
+- `ai.retry.max-attempts` pasa a ser **2** por defecto (antes 3). Cada intento puede agotar el
+  `read-timeout`, así que cada intento de más multiplica lo que el usuario espera antes de ver el
+  error.
 
 ### Corregido
 

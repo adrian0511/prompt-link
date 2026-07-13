@@ -219,13 +219,24 @@ public class ReactiveAiService {
                 .onRetryExhaustedThrow((spec, signal) -> signal.failure());
     }
 
-    /** Los mismos criterios que en el cliente bloqueante: rate limits, errores del servidor y red. */
+    /**
+     * Los mismos criterios que en el cliente bloqueante — rate limits, errores del servidor y red —
+     * más los fallos a mitad de stream.
+     *
+     * <p>Un fallo de stream es transitorio por naturaleza (la petición ya fue aceptada con un 200;
+     * lo que se rompió fue el proveedor o el transporte), así que reintentarlo tiene sentido. Que
+     * sea <em>seguro</em> lo garantiza el guardia de {@link #stream(List)}: si ya se entregó algún
+     * token, no se reintenta, porque el usuario vería el texto duplicado.
+     */
     private static boolean esReintentable(Throwable e) {
         if (!(e instanceof AiClientException error)) {
             return false;
         }
         int status = error.getStatusCode();
-        return status == 429 || status >= 500 || status == AiClientException.NETWORK_ERROR;
+        return status == 429
+                || status >= 500
+                || status == AiClientException.NETWORK_ERROR
+                || status == AiClientException.STREAM_ERROR;
     }
 
     /**
@@ -263,10 +274,18 @@ public class ReactiveAiService {
         return delta.isTextual() ? delta.asText() : "";
     }
 
-    /** El código del error puede venir como número (429) o como texto ("server_error"). */
+    /**
+     * El código del error puede venir como número (429) o como texto ("server_error").
+     *
+     * <p>Cuando es numérico se respeta, con su significado de siempre: un 402 a mitad de stream
+     * sigue sin reintentarse. Cuando es texto no hay forma de saber qué clase de fallo es, y se
+     * clasifica como {@link AiClientException#STREAM_ERROR}, que sí es reintentable. Sin esa
+     * distinción, el mismo fallo del proveedor se reintentaría o no según el tipo JSON que
+     * OpenRouter le pusiera al código, que es una diferencia absurda.
+     */
     private static int statusDelError(JsonNode error) {
         JsonNode codigo = error.path("code");
-        return codigo.isInt() ? codigo.asInt() : AiClientException.INVALID_RESPONSE;
+        return codigo.isInt() ? codigo.asInt() : AiClientException.STREAM_ERROR;
     }
 
     private void validar(List<Message> messages) {

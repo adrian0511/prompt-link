@@ -215,11 +215,13 @@ class AiClientIntegrationTest {
         fallosIniciales = 2;
         statusFallo = 503;
 
-        runner.withPropertyValues(REINTENTOS_RAPIDOS).run(context -> {
-            context.getBean(AiService.class).generate("¿qué tal?");
+        runner.withPropertyValues(REINTENTOS_RAPIDOS)
+                .withPropertyValues("ai.retry.max-attempts=3")
+                .run(context -> {
+                    context.getBean(AiService.class).generate("¿qué tal?");
 
-            assertThat(peticiones).hasValue(3);
-        });
+                    assertThat(peticiones).hasValue(3);
+                });
     }
 
     /**

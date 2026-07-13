@@ -57,8 +57,14 @@ public class AiProperties {
         /** Si está activada, se reintentan los 429 y los 5xx. */
         private boolean enabled = false;
 
-        /** Número total de intentos, incluido el primero. */
-        private int maxAttempts = 3;
+        /**
+         * Número total de intentos, incluido el primero.
+         *
+         * <p>Solo 2 por defecto: en el peor caso cada intento agota el read-timeout, así que subir
+         * este número multiplica lo que el usuario espera mirando la pantalla antes de ver el error.
+         * Un único reintento ya captura la mayoría de los fallos transitorios.
+         */
+        private int maxAttempts = 2;
 
         /** Espera inicial entre intentos; crece exponencialmente hasta max-period. */
         private Duration period = Duration.ofMillis(500);

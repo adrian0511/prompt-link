@@ -27,6 +27,16 @@ public class AiClientException extends RuntimeException {
     /** La librería no está bien configurada: falta {@code ai.api-key}. */
     public static final int CONFIGURATION_ERROR = -3;
 
+    /**
+     * La API falló <em>a mitad de un stream</em>, después de haber respondido 200, y sin dar un
+     * código HTTP numérico (manda cosas como {@code "server_error"}).
+     *
+     * <p>Se trata como transitorio: si el fallo llega antes del primer token, la llamada se
+     * reintenta. Cuando OpenRouter sí da un código numérico se usa ese, con su significado normal:
+     * un 402 a mitad de stream sigue sin reintentarse.
+     */
+    public static final int STREAM_ERROR = -4;
+
     private final int statusCode;
     private final String errorBody;
 

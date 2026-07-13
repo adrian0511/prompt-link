@@ -64,7 +64,7 @@ ai:
   read-timeout: 60s                 # Timeout de lectura; súbelo con modelos grandes
   retry:
     enabled: false                  # Reintentos ante 429 y 5xx (ver más abajo)
-    max-attempts: 3                 # Intentos totales, incluido el primero
+    max-attempts: 2                 # Intentos totales, incluido el primero
     period: 500ms                   # Espera inicial; crece exponencialmente
     max-period: 5s                  # Tope de la espera entre intentos
 ```
@@ -82,7 +82,19 @@ Actívalos con `ai.retry.enabled: true` si prefieres asumir ese riesgo a cambio 
 - Si se agotan los intentos, recibes la misma `AiClientException` que recibirías sin reintentos, con su `statusCode` y su `errorBody` intactos.
 - En `stream(...)`, solo se reintenta **antes del primer token**. Una vez has empezado a recibir texto, reintentar reenviaría la respuesta desde el principio y el usuario vería la frase duplicada en pantalla.
 
-Los timeouts y los reintentos se aplican **igual en los dos caminos**, el bloqueante y el reactivo. En streaming, el `read-timeout` es un timeout de **inactividad**, no total: una respuesta que tarde varios minutos en generarse no se corta mientras siga llegando texto; lo que se detecta es que el stream se quede mudo.
+Los timeouts y los reintentos se aplican **igual en los dos caminos**, el bloqueante y el reactivo. El `read-timeout` es un timeout de **inactividad**, no total: mide el tiempo sin recibir nada por la red. En streaming eso significa que una respuesta que tarde varios minutos en generarse no se corta mientras siga llegando texto; lo que se detecta es que el stream se quede mudo.
+
+#### Cuidado con la latencia del peor caso
+
+Cada intento puede llegar a agotar el `read-timeout`, así que con reintentos activos el tiempo máximo antes de devolver un error es aproximadamente:
+
+```
+max-attempts × read-timeout + backoff
+```
+
+Con los valores por defecto (`2 × 60s`) eso son unos dos minutos con el usuario mirando la pantalla. Si tu caso es un chat interactivo, ajusta `max-attempts` y `read-timeout` a lo que tu interfaz pueda tolerar.
+
+Ojo con bajar mucho el `read-timeout`: en una llamada **sin streaming**, OpenRouter no envía ni un byte hasta que el modelo ha terminado de generar, así que todo ese rato cuenta como inactividad. Un `read-timeout` de 25s mataría cualquier respuesta que tarde más de 25 segundos en generarse, que son muchas. En **streaming** el problema no existe, porque el primer token llega enseguida y luego el flujo no para: ahí sí puedes bajarlo sin miedo. Es otra razón para preferir `stream(...)` en interfaces de chat.
 
 ## 📝 Uso básico
 
@@ -174,6 +186,7 @@ AiResponse response = aiService.generate(conversacion);
 | `-1` | `NETWORK_ERROR` | La llamada no llegó a completarse: timeout, DNS, conexión rechazada. |
 | `-2` | `INVALID_RESPONSE` | La API respondió 200 pero sin `choices` o sin contenido utilizable. |
 | `-3` | `CONFIGURATION_ERROR` | Falta `ai.api-key`. |
+| `-4` | `STREAM_ERROR` | La API falló a mitad de un stream, sin dar un código HTTP numérico. Se trata como transitorio. |
 
 Puedes usar `isHttpError()` como atajo para el primer caso, y capturarla globalmente con `@RestControllerAdvice`:
 
