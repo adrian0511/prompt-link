@@ -80,6 +80,9 @@ Actívalos con `ai.retry.enabled: true` si prefieres asumir ese riesgo a cambio 
 - Se reintentan los **429** (la petición ni llegó a procesarse, así que reintentarla es seguro) y los **5xx**, con backoff exponencial y respetando la cabecera `Retry-After` si OpenRouter la envía.
 - **No** se reintentan los 401, 402, 404 ni el resto de errores de la petición: repetirlos daría exactamente el mismo error.
 - Si se agotan los intentos, recibes la misma `AiClientException` que recibirías sin reintentos, con su `statusCode` y su `errorBody` intactos.
+- En `stream(...)`, solo se reintenta **antes del primer token**. Una vez has empezado a recibir texto, reintentar reenviaría la respuesta desde el principio y el usuario vería la frase duplicada en pantalla.
+
+Los timeouts y los reintentos se aplican **igual en los dos caminos**, el bloqueante y el reactivo. En streaming, el `read-timeout` es un timeout de **inactividad**, no total: una respuesta que tarde varios minutos en generarse no se corta mientras siga llegando texto; lo que se detecta es que el stream se quede mudo.
 
 ## 📝 Uso básico
 

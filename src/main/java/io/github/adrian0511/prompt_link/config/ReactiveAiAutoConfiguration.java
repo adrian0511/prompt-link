@@ -7,11 +7,14 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import io.github.adrian0511.prompt_link.service.ReactiveAiService;
+import io.netty.channel.ChannelOption;
+import reactor.netty.http.client.HttpClient;
 
 /**
  * Registra {@link ReactiveAiService} en aplicaciones que tengan WebFlux en el classpath.
@@ -46,6 +49,7 @@ public class ReactiveAiAutoConfiguration {
 
         WebClient webClient = builder
                 .baseUrl(properties.getUrl())
+                .clientConnector(new ReactorClientHttpConnector(httpClient(properties)))
                 .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + properties.getApiKey())
                 .defaultHeader("HTTP-Referer", properties.getHost())
                 .defaultHeader("X-Title", properties.getTitle())
@@ -53,6 +57,27 @@ public class ReactiveAiAutoConfiguration {
 
         return new ReactiveAiService(
                 webClient, properties, objectMappers.getIfAvailable(ObjectMapper::new));
+    }
+
+    /**
+     * Aplica {@code ai.connect-timeout} y {@code ai.read-timeout} al cliente reactivo.
+     *
+     * <p>Reactor Netty no trae ningún timeout de respuesta por defecto: sin esto, un servidor que
+     * acepta la conexión y luego se queda mudo dejaría el {@code Mono} esperando para siempre. Y era
+     * la peor variante del fallo, porque las dos propiedades existen y están documentadas, así que
+     * quien las configuraba creía que hacían algo.
+     *
+     * <p>{@code responseTimeout} mide el tiempo <strong>entre lecturas de red</strong>, no el total:
+     * una respuesta larga y legítima que tarde minutos en emitirse no se corta, mientras siga
+     * llegando algo. Es la semántica que necesita el streaming, y además cuenta los keep-alives
+     * ({@code : OPENROUTER PROCESSING}) que OpenRouter envía durante las pausas largas, que a este
+     * nivel sí se ven aunque el decodificador de SSE los descarte después.
+     */
+    private static HttpClient httpClient(AiProperties properties) {
+        return HttpClient.create()
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS,
+                        (int) properties.getConnectTimeout().toMillis())
+                .responseTimeout(properties.getReadTimeout());
     }
 
 }

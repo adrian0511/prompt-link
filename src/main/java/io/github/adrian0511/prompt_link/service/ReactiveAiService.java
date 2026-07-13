@@ -1,12 +1,15 @@
 package io.github.adrian0511.prompt_link.service;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 
 import org.springframework.http.MediaType;
 import org.springframework.util.StringUtils;
 import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import io.github.adrian0511.prompt_link.config.AiProperties;
@@ -14,10 +17,10 @@ import io.github.adrian0511.prompt_link.dto.AiResponse;
 import io.github.adrian0511.prompt_link.dto.Message;
 import io.github.adrian0511.prompt_link.dto.OpenRouterRequest;
 import io.github.adrian0511.prompt_link.dto.OpenRouterResponse;
-import io.github.adrian0511.prompt_link.dto.OpenRouterStreamChunk;
 import io.github.adrian0511.prompt_link.exceptions.AiClientException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.util.retry.Retry;
 
 /**
  * Variante reactiva de {@link AiService}, para aplicaciones WebFlux.
@@ -88,7 +91,9 @@ public class ReactiveAiService {
                     .onStatus(status -> status.isError(), this::traducirError)
                     .bodyToMono(OpenRouterResponse.class)
                     .map(this::extraerContenido)
-                    .onErrorMap(noEsDeLaLibreria(), this::comoErrorDeRed);
+                    .onErrorMap(noEsDeLaLibreria(), this::comoErrorDeRed)
+                    // Reintentar aquí es seguro: no se ha entregado nada al llamante todavía.
+                    .retryWhen(politicaDeReintentos(() -> false));
         });
     }
 
@@ -126,6 +131,11 @@ public class ReactiveAiService {
         return Flux.defer(() -> {
             validar(messages);
 
+            // Reintentar un stream a medias duplicaría texto en la pantalla del usuario: si ya se
+            // emitió un fragmento, la respuesta empezaría de cero y él vería la frase dos veces.
+            // Solo es seguro reintentar mientras no se haya entregado nada.
+            AtomicBoolean yaSeEmitio = new AtomicBoolean();
+
             return peticion(messages, true)
                     .accept(MediaType.TEXT_EVENT_STREAM)
                     .retrieve()
@@ -135,7 +145,9 @@ public class ReactiveAiService {
                     .filter(evento -> !FIN_DEL_STREAM.equals(evento))
                     .map(this::extraerFragmento)
                     .filter(fragmento -> !fragmento.isEmpty())
-                    .onErrorMap(noEsDeLaLibreria(), this::comoErrorDeRed);
+                    .doOnNext(fragmento -> yaSeEmitio.set(true))
+                    .onErrorMap(noEsDeLaLibreria(), this::comoErrorDeRed)
+                    .retryWhen(politicaDeReintentos(yaSeEmitio::get));
         });
     }
 
@@ -184,16 +196,52 @@ public class ReactiveAiService {
         return new AiResponse(message.getContent());
     }
 
-    /** Devuelve el texto del fragmento, o cadena vacía si el evento no lleva contenido. */
-    private String extraerFragmento(String evento) {
-        try {
-            OpenRouterStreamChunk chunk = objectMapper.readValue(evento, OpenRouterStreamChunk.class);
-            if (chunk.getChoices() == null || chunk.getChoices().isEmpty()) {
-                return "";
-            }
+    /**
+     * Política de reintentos equivalente a la del cliente bloqueante, pero expresada en Reactor:
+     * el {@code Retryer} de Feign es un bean suyo y no tiene ningún efecto por este camino.
+     *
+     * @param yaSeEmitio si ya se entregó algún fragmento al llamante, en cuyo caso reintentar
+     *     duplicaría texto y no se hace
+     */
+    private Retry politicaDeReintentos(BooleanSupplier yaSeEmitio) {
+        AiProperties.Retry config = properties.getRetry();
 
-            OpenRouterStreamChunk.Delta delta = chunk.getChoices().get(0).getDelta();
-            return delta == null || delta.getContent() == null ? "" : delta.getContent();
+        // Sin onRetryExhaustedThrow, Reactor envuelve el fallo en una RetryExhaustedException y el
+        // llamante perdería la AiClientException con su status y su cuerpo. Hace falta en las dos
+        // ramas: incluso sin reintentos, Retry.max(0) envuelve el error del primer intento.
+        if (!config.isEnabled()) {
+            return Retry.max(0).onRetryExhaustedThrow((spec, signal) -> signal.failure());
+        }
+
+        return Retry.backoff(config.getMaxAttempts() - 1L, config.getPeriod())
+                .maxBackoff(config.getMaxPeriod())
+                .filter(e -> esReintentable(e) && !yaSeEmitio.getAsBoolean())
+                .onRetryExhaustedThrow((spec, signal) -> signal.failure());
+    }
+
+    /** Los mismos criterios que en el cliente bloqueante: rate limits, errores del servidor y red. */
+    private static boolean esReintentable(Throwable e) {
+        if (!(e instanceof AiClientException error)) {
+            return false;
+        }
+        int status = error.getStatusCode();
+        return status == 429 || status >= 500 || status == AiClientException.NETWORK_ERROR;
+    }
+
+    /**
+     * Devuelve el texto del fragmento, o cadena vacía si el evento no lleva contenido.
+     *
+     * <p>Ojo con el caso peligroso: OpenRouter puede mandar un error <em>dentro</em> del stream,
+     * después de haber respondido 200 y de haber emitido tokens, con el fallo en un campo
+     * {@code error} de primer nivel. Ese evento trae además un {@code choices} con el contenido
+     * vacío, así que sin esta comprobación se parsearía sin protestar, el fragmento vacío se
+     * filtraría y el stream terminaría <em>con normalidad</em>: el usuario vería su respuesta
+     * cortada a media frase y la aplicación no se enteraría de nada.
+     */
+    private String extraerFragmento(String evento) {
+        JsonNode nodo;
+        try {
+            nodo = objectMapper.readTree(evento);
         } catch (Exception e) {
             throw new AiClientException(
                     "No se pudo interpretar un fragmento del stream de la API de IA",
@@ -201,6 +249,24 @@ public class ReactiveAiService {
                     evento,
                     e);
         }
+
+        JsonNode error = nodo.get("error");
+        if (error != null && !error.isNull()) {
+            throw new AiClientException(
+                    "La API de IA falló a mitad del stream: "
+                            + error.path("message").asText("sin detalle"),
+                    statusDelError(error),
+                    evento);
+        }
+
+        JsonNode delta = nodo.path("choices").path(0).path("delta").path("content");
+        return delta.isTextual() ? delta.asText() : "";
+    }
+
+    /** El código del error puede venir como número (429) o como texto ("server_error"). */
+    private static int statusDelError(JsonNode error) {
+        JsonNode codigo = error.path("code");
+        return codigo.isInt() ? codigo.asInt() : AiClientException.INVALID_RESPONSE;
     }
 
     private void validar(List<Message> messages) {

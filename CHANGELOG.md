@@ -19,8 +19,20 @@ El formato sigue [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y e
   mismo significado en su `statusCode`. Cambiar de uno a otro no obliga a reescribir el manejo de
   errores.
 
+- Los timeouts (`ai.connect-timeout`, `ai.read-timeout`) y los reintentos (`ai.retry.*`) se aplican
+  también al camino reactivo. En streaming, el `read-timeout` es un timeout de **inactividad**, no
+  total: una respuesta larga no se corta mientras siga llegando texto.
+- En `stream(...)` solo se reintenta antes del primer token: una vez emitido texto, reintentar
+  reenviaría la respuesta desde el principio y el usuario la vería duplicada.
+
 ### Corregido
 
+- **Los errores que OpenRouter manda a mitad del stream ya no se tragan en silencio.** La API puede
+  fallar después de haber respondido 200 y de haber emitido tokens, enviando el fallo en un campo
+  `error` dentro de un evento SSE que además trae un `choices` con contenido vacío. Ese evento se
+  parseaba sin protestar, el fragmento vacío se filtraba y el stream terminaba con normalidad: el
+  usuario veía la respuesta cortada a media frase y la aplicación no se enteraba de nada. Ahora se
+  propaga como `AiClientException`.
 - Los DTOs de respuesta ignoran explícitamente las propiedades desconocidas. Antes la
   deserialización solo funcionaba porque Spring Boot desactiva `FAIL_ON_UNKNOWN_PROPERTIES` por
   defecto: una aplicación que lo reactivara, o un campo nuevo en la API de OpenRouter, la rompían.

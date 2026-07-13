@@ -7,6 +7,10 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.AfterEach;
@@ -20,6 +24,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import com.sun.net.httpserver.Headers;
+import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 
@@ -28,47 +33,80 @@ import io.github.adrian0511.prompt_link.exceptions.AiClientException;
 import reactor.test.StepVerifier;
 
 /**
- * Ejercita el servicio reactivo contra un servidor HTTP real, incluido el streaming SSE, que es la
- * razón de ser de este camino: comprobar que los fragmentos llegan de uno en uno y en orden.
+ * Ejercita el servicio reactivo contra un servidor HTTP real, incluido el streaming SSE.
  *
- * <p>Repite además el test de la fuga de la API key en la variante reactiva. El fallo original de
- * la librería fue exactamente este, en su versión Feign: si la cabecera Authorization se añadiera
- * al WebClient.Builder compartido de la aplicación en vez de a una copia propia, la clave viajaría
- * a todos los WebClient de quien use la librería.
+ * <p>Aquí se fijan los tres comportamientos que un test con mocks no vería: que los timeouts se
+ * apliquen de verdad (y que sean por inactividad, no totales), que los reintentos no dupliquen texto
+ * ya emitido, y que un error mandado a mitad del stream no se trague en silencio.
  */
 class ReactiveAiServiceTest {
 
     private static final String RESPUESTA_OK = """
             {"choices":[{"message":{"role":"assistant","content":"hola"}}]}""";
 
+    private static final String CUERPO_FALLO = """
+            {"error":{"message":"rate limit exceeded"}}""";
+
+    /** Tal cual lo documenta OpenRouter: el error va arriba, y el choices viene vacío. */
+    private static final String EVENTO_DE_ERROR = """
+            data: {"id":"cmpl-abc","error":{"code":"server_error","message":"Provider disconnected unexpectedly"},"choices":[{"index":0,"delta":{"content":""},"finish_reason":"error"}]}
+
+            """;
+
+    private static final String REINTENTOS_RAPIDOS = "ai.retry.enabled=true";
+
     private HttpServer server;
     private final AtomicReference<Headers> cabecerasRecibidas = new AtomicReference<>();
     private final AtomicReference<String> cuerpoRecibido = new AtomicReference<>();
+    private final AtomicInteger peticiones = new AtomicInteger();
 
     private volatile int status = 200;
     private volatile String respuesta = RESPUESTA_OK;
     private volatile boolean sse = false;
+
+    /** Bloques SSE crudos que el servidor irá escribiendo, uno a uno, con {@link #pausa} entre ellos. */
+    private volatile List<String> guion;
+    private volatile Duration pausa = Duration.ZERO;
+
+    /** Si es true, el servidor deja de escribir y no cierra: simula un servidor que se queda mudo. */
+    private volatile boolean seQuedaMudo;
+
+    private volatile int fallosIniciales = 0;
+    private volatile int statusFallo = 429;
 
     private ApplicationContextRunner runner;
 
     @BeforeEach
     void arrancaElServidor() throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        // Los handlers bloquean (pausas, quedarse mudo): sin un pool propio bloquearían el servidor.
+        server.setExecutor(Executors.newCachedThreadPool());
+
         HttpHandler handler = exchange -> {
             cabecerasRecibidas.set(exchange.getRequestHeaders());
             try (InputStream in = exchange.getRequestBody()) {
                 cuerpoRecibido.set(new String(in.readAllBytes(), StandardCharsets.UTF_8));
             }
 
-            byte[] cuerpo = respuesta.getBytes(StandardCharsets.UTF_8);
-            exchange.getResponseHeaders().add(
-                    "Content-Type", sse ? "text/event-stream" : "application/json");
-            exchange.sendResponseHeaders(status, cuerpo.length);
-            try (OutputStream out = exchange.getResponseBody()) {
-                out.write(cuerpo);
-                out.flush();
+            if (peticiones.incrementAndGet() <= fallosIniciales) {
+                responder(exchange, statusFallo, CUERPO_FALLO, "application/json");
+                return;
             }
+            if (guion != null) {
+                emitirGuion(exchange);
+                return;
+            }
+            if (seQuedaMudo) {
+                // Cabeceras sí, cuerpo nunca: la conexión queda abierta y muda.
+                exchange.getResponseHeaders().add("Content-Type", "application/json");
+                exchange.sendResponseHeaders(200, 0);
+                dormir(Duration.ofSeconds(30));
+                return;
+            }
+            responder(exchange, status, respuesta,
+                    sse ? "text/event-stream" : "application/json");
         };
+
         server.createContext("/chat/completions", handler);
         server.createContext("/ping", handler);
         server.start();
@@ -85,38 +123,42 @@ class ReactiveAiServiceTest {
         server.stop(0);
     }
 
+    // --- Streaming ---------------------------------------------------------------------------
+
     @Test
     void emiteLosFragmentosDelStreamEnOrden() {
-        sse = true;
-        respuesta = """
-                data: {"choices":[{"delta":{"role":"assistant"}}]}
+        guion = List.of(
+                evento("{\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}"),
+                evento("{\"choices\":[{\"delta\":{\"content\":\"Había \"}}]}"),
+                evento("{\"choices\":[{\"delta\":{\"content\":\"una vez\"}}]}"),
+                evento("[DONE]"));
 
-                data: {"choices":[{"delta":{"content":"Había "}}]}
+        runner.run(context -> StepVerifier
+                // El primer evento solo trae el rol: no debe emitir un fragmento vacío.
+                .create(context.getBean(ReactiveAiService.class).stream("Cuéntame un cuento"))
+                .expectNext("Había ")
+                .expectNext("una vez")
+                .verifyComplete());
+    }
 
-                data: {"choices":[{"delta":{"content":"una vez"}}]}
+    /** OpenRouter manda comentarios SSE de keep-alive durante las pausas largas. No son tokens. */
+    @Test
+    void ignoraLosKeepAliveDeOpenRouter() {
+        guion = List.of(
+                ": OPENROUTER PROCESSING\n\n",
+                evento("{\"choices\":[{\"delta\":{\"content\":\"hola\"}}]}"),
+                ": OPENROUTER PROCESSING\n\n",
+                evento("[DONE]"));
 
-                data: [DONE]
-
-                """;
-
-        runner.run(context -> {
-            ReactiveAiService service = context.getBean(ReactiveAiService.class);
-
-            // El primer evento solo trae el rol, sin contenido: no debe emitir un fragmento vacío.
-            StepVerifier.create(service.stream("Cuéntame un cuento"))
-                    .expectNext("Había ")
-                    .expectNext("una vez")
-                    .verifyComplete();
-        });
+        runner.run(context -> StepVerifier
+                .create(context.getBean(ReactiveAiService.class).stream("hola"))
+                .expectNext("hola")
+                .verifyComplete());
     }
 
     @Test
     void pideElStreamingALaApi() {
-        sse = true;
-        respuesta = """
-                data: [DONE]
-
-                """;
+        guion = List.of(evento("[DONE]"));
 
         runner.run(context -> {
             context.getBean(ReactiveAiService.class).stream("hola").blockLast();
@@ -133,6 +175,149 @@ class ReactiveAiServiceTest {
             assertThat(cuerpoRecibido.get()).doesNotContain("stream");
         });
     }
+
+    // --- El error que se colaba a mitad de stream --------------------------------------------
+
+    /**
+     * OpenRouter puede fallar <em>después</em> de haber respondido 200 y de haber emitido tokens,
+     * mandando el error dentro del stream. Ese evento trae un choices con contenido vacío, así que
+     * antes se parseaba, se filtraba como fragmento vacío y el stream terminaba con normalidad: el
+     * usuario veía la frase cortada y la aplicación no se enteraba de nada.
+     */
+    @Test
+    void propagaUnErrorMandadoAMitadDelStream() {
+        guion = List.of(
+                evento("{\"choices\":[{\"delta\":{\"content\":\"Había \"}}]}"),
+                EVENTO_DE_ERROR,
+                evento("[DONE]"));
+
+        runner.run(context -> StepVerifier
+                .create(context.getBean(ReactiveAiService.class).stream("Cuéntame un cuento"))
+                .expectNext("Había ")
+                .verifyErrorSatisfies(e -> {
+                    assertThat(e).isInstanceOf(AiClientException.class);
+                    AiClientException error = (AiClientException) e;
+                    assertThat(error).hasMessageContaining("Provider disconnected unexpectedly");
+                    // El code viene como texto ("server_error"), no como número.
+                    assertThat(error.getStatusCode())
+                            .isEqualTo(AiClientException.INVALID_RESPONSE);
+                }));
+    }
+
+    // --- Timeouts ----------------------------------------------------------------------------
+
+    /** Sin timeout de respuesta, un servidor que acepta y se calla dejaría el Mono esperando siempre. */
+    @Test
+    void abortaSiLaRespuestaNoLlegaNunca() {
+        seQuedaMudo = true;
+
+        runner.withPropertyValues("ai.read-timeout=400ms").run(context -> StepVerifier
+                .create(context.getBean(ReactiveAiService.class).generate("hola"))
+                .verifyErrorSatisfies(e -> assertThat(((AiClientException) e).getStatusCode())
+                        .isEqualTo(AiClientException.NETWORK_ERROR)));
+    }
+
+    @Test
+    void abortaSiElStreamSeQuedaMudoAMedias() {
+        guion = List.of(evento("{\"choices\":[{\"delta\":{\"content\":\"Había \"}}]}"));
+        seQuedaMudo = true;
+
+        runner.withPropertyValues("ai.read-timeout=400ms").run(context -> StepVerifier
+                .create(context.getBean(ReactiveAiService.class).stream("hola"))
+                .expectNext("Había ")
+                .verifyErrorSatisfies(e -> assertThat(((AiClientException) e).getStatusCode())
+                        .isEqualTo(AiClientException.NETWORK_ERROR)));
+    }
+
+    /**
+     * El timeout tiene que ser por inactividad, no total: una respuesta larga y legítima que tarde
+     * más que el read-timeout en terminar de emitirse no se puede cortar en seco mientras siga
+     * llegando texto. Aquí el stream dura ~1,2s con un read-timeout de 500ms, y debe completarse.
+     */
+    @Test
+    void noCortaUnStreamLentoQueSigueVivo() {
+        guion = List.of(
+                evento("{\"choices\":[{\"delta\":{\"content\":\"uno \"}}]}"),
+                evento("{\"choices\":[{\"delta\":{\"content\":\"dos \"}}]}"),
+                evento("{\"choices\":[{\"delta\":{\"content\":\"tres \"}}]}"),
+                evento("{\"choices\":[{\"delta\":{\"content\":\"cuatro\"}}]}"),
+                evento("[DONE]"));
+        pausa = Duration.ofMillis(300);
+
+        runner.withPropertyValues("ai.read-timeout=500ms").run(context -> StepVerifier
+                .create(context.getBean(ReactiveAiService.class).stream("cuenta"))
+                .expectNext("uno ", "dos ", "tres ", "cuatro")
+                .verifyComplete());
+    }
+
+    // --- Reintentos --------------------------------------------------------------------------
+
+    @Test
+    void porDefectoNoReintenta() {
+        status = 429;
+        respuesta = CUERPO_FALLO;
+
+        runner.run(context -> {
+            StepVerifier.create(context.getBean(ReactiveAiService.class).generate("hola"))
+                    .verifyErrorSatisfies(e -> assertThat(((AiClientException) e).getStatusCode())
+                            .isEqualTo(429));
+
+            assertThat(peticiones).hasValue(1);
+        });
+    }
+
+    @Test
+    void reintentaGenerateCuandoSeActiva() {
+        fallosIniciales = 1;
+        statusFallo = 429;
+
+        runner.withPropertyValues(REINTENTOS_RAPIDOS, "ai.retry.period=10ms").run(context -> {
+            StepVerifier.create(context.getBean(ReactiveAiService.class).generate("hola"))
+                    .assertNext(r -> assertThat(r.getContent()).isEqualTo("hola"))
+                    .verifyComplete();
+
+            assertThat(peticiones).hasValue(2);
+        });
+    }
+
+    /** Un fallo antes del primer token sí se puede reintentar: el usuario no ha visto nada aún. */
+    @Test
+    void reintentaUnStreamQueFallaAntesDelPrimerToken() {
+        fallosIniciales = 1;
+        statusFallo = 429;
+        guion = List.of(
+                evento("{\"choices\":[{\"delta\":{\"content\":\"hola\"}}]}"),
+                evento("[DONE]"));
+
+        runner.withPropertyValues(REINTENTOS_RAPIDOS, "ai.retry.period=10ms").run(context -> {
+            StepVerifier.create(context.getBean(ReactiveAiService.class).stream("hola"))
+                    .expectNext("hola")
+                    .verifyComplete();
+
+            assertThat(peticiones).hasValue(2);
+        });
+    }
+
+    /**
+     * Pero si ya se emitieron tokens, reintentar reenviaría la respuesta desde el principio y el
+     * usuario vería el texto duplicado en pantalla. Se falla, y no se reintenta.
+     */
+    @Test
+    void noReintentaUnStreamQueYaEmpezoAEmitir() {
+        guion = List.of(
+                evento("{\"choices\":[{\"delta\":{\"content\":\"Había \"}}]}"),
+                EVENTO_DE_ERROR);
+
+        runner.withPropertyValues(REINTENTOS_RAPIDOS, "ai.retry.period=10ms").run(context -> {
+            StepVerifier.create(context.getBean(ReactiveAiService.class).stream("hola"))
+                    .expectNext("Había ")
+                    .verifyError(AiClientException.class);
+
+            assertThat(peticiones).hasValue(1);
+        });
+    }
+
+    // --- Lo demás ----------------------------------------------------------------------------
 
     @Test
     void devuelveLaRespuestaCompletaSinStreaming() {
@@ -152,7 +337,6 @@ class ReactiveAiServiceTest {
         });
     }
 
-    /** El mismo contrato de errores que el servicio bloqueante: status y cuerpo intactos. */
     @Test
     void traduceLosErroresDeLaApiConservandoStatusYCuerpo() {
         status = 429;
@@ -180,9 +364,9 @@ class ReactiveAiServiceTest {
     }
 
     /**
-     * Regresión de la fuga de la API key, en su versión reactiva: la cabecera Authorization debe
-     * estar en el WebClient de la librería y en ningún otro. Si se añadiera al WebClient.Builder
-     * compartido de la aplicación, este test recibiría la clave en la llamada a otro servicio.
+     * Regresión de la fuga de la API key, en su versión reactiva: si la cabecera Authorization se
+     * añadiera al WebClient.Builder compartido de la aplicación en vez de a una copia propia, la
+     * clave viajaría a todos los WebClient de quien use la librería.
      */
     @Test
     void noFiltraLaApiKeyAlWebClientDeLaAplicacion() {
@@ -199,11 +383,54 @@ class ReactiveAiServiceTest {
         });
     }
 
-    /** Sin WebFlux en el classpath, la librería no debe registrar nada reactivo. */
     @Test
     void noSeActivaSinWebFluxEnElClasspath() {
         runner.withClassLoader(new FilteredClassLoader(WebClient.class))
                 .run(context -> assertThat(context).doesNotHaveBean(ReactiveAiService.class));
+    }
+
+    // --- Utilidades del servidor -------------------------------------------------------------
+
+    private static String evento(String json) {
+        return "data: " + json + "\n\n";
+    }
+
+    private void emitirGuion(HttpExchange exchange) throws IOException {
+        exchange.getResponseHeaders().add("Content-Type", "text/event-stream");
+        exchange.sendResponseHeaders(200, 0);
+
+        OutputStream out = exchange.getResponseBody();
+        for (String bloque : guion) {
+            dormir(pausa);
+            out.write(bloque.getBytes(StandardCharsets.UTF_8));
+            out.flush();
+        }
+
+        if (seQuedaMudo) {
+            dormir(Duration.ofSeconds(30));
+        }
+        out.close();
+    }
+
+    private static void responder(HttpExchange exchange, int status, String cuerpo, String tipo)
+            throws IOException {
+        byte[] bytes = cuerpo.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().add("Content-Type", tipo);
+        exchange.sendResponseHeaders(status, bytes.length);
+        try (OutputStream out = exchange.getResponseBody()) {
+            out.write(bytes);
+        }
+    }
+
+    private static void dormir(Duration duracion) {
+        if (duracion.isZero() || duracion.isNegative()) {
+            return;
+        }
+        try {
+            Thread.sleep(duracion.toMillis());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     @Configuration(proxyBeanMethods = false)
