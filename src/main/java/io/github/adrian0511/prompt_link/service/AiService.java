@@ -89,16 +89,7 @@ public class AiService {
      * @throws AiClientException if the call fails or the answer is unusable
      */
     public AiResponse generate(List<Message> messages) {
-        if (messages == null || messages.isEmpty()) {
-            throw new IllegalArgumentException("The conversation must have at least one message");
-        }
-        requireApiKey();
-
-        OpenRouterRequest request = new OpenRouterRequest();
-        request.setModel(properties.getModel());
-        request.setMessages(List.copyOf(messages));
-        request.setMaxTokens(properties.getMaxTokens());
-        request.setTemperature(properties.getTemperature());
+        OpenRouterRequest request = ChatRequests.build(properties, messages, false);
 
         try {
             return new AiResponse(extractContent(aiClient.chatCompletion(request)));
@@ -132,21 +123,9 @@ public class AiService {
     }
 
     /**
-     * Without this check the header would go out as {@code Bearer null} and OpenRouter would answer
-     * a 401 that says nothing about the real cause.
-     */
-    private void requireApiKey() {
-        if (!StringUtils.hasText(properties.getApiKey())) {
-            throw new AiClientException(
-                    "The ai.api-key property is not configured",
-                    AiClientException.CONFIGURATION_ERROR,
-                    null);
-        }
-    }
-
-    /**
      * A 200 does not guarantee a usable answer: OpenRouter may return an empty list of choices, or a
-     * choice with no content, for instance when the model filters the request.
+     * choice with no content, for instance when the model filters the request or a reasoning model
+     * spends the whole token budget thinking.
      */
     private String extractContent(OpenRouterResponse response) {
         if (response == null || response.getChoices() == null || response.getChoices().isEmpty()) {
@@ -156,12 +135,10 @@ public class AiService {
                     null);
         }
 
-        Message message = response.getChoices().get(0).getMessage();
-        if (message == null || message.getContent() == null) {
-            throw new AiClientException(
-                    "The AI API returned a choice with no content",
-                    AiClientException.INVALID_RESPONSE,
-                    null);
+        OpenRouterResponse.Choice choice = response.getChoices().get(0);
+        Message message = choice.getMessage();
+        if (message == null || !StringUtils.hasLength(message.getContent())) {
+            throw ChatRequests.emptyAnswer(choice.getFinishReason(), properties.getMaxTokens());
         }
 
         return message.getContent();

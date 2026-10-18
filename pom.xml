@@ -12,7 +12,7 @@
 
 	<groupId>io.github.adrian0511</groupId>
 	<artifactId>prompt-link</artifactId>
-	<version>1.1.0</version>
+	<version>1.2.0</version>
 	<name>prompt-link</name>
 	<description>Java client for generative AI through OpenRouter, with Spring Boot auto-configuration and token streaming</description>
 	<url>https://github.com/adrian0511/prompt-link</url>

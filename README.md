@@ -15,6 +15,8 @@
 - **Token streaming** – `Flux<String>` on WebFlux: text arrives as it is generated.
 - **Multi-turn conversations** – System prompt and message history.
 - **Configurable timeouts and retries** – With defaults chosen for LLM workloads.
+- **Fallback models** – If your model is down or rate limited, OpenRouter answers with the next one in the same request.
+- **Reasoning control** – Turn reasoning off or cap it, so a thinking model does not spend the whole token budget before writing a word.
 
 ## ⚠️ Upgrading from 1.0.2
 
@@ -37,14 +39,14 @@
 <dependency>
     <groupId>io.github.adrian0511</groupId>
     <artifactId>prompt-link</artifactId>
-    <version>1.1.0</version>
+    <version>1.2.0</version>
 </dependency>
 ```
 
 ### Gradle
 
 ```groovy
-implementation 'io.github.adrian0511:prompt-link:1.1.0'
+implementation 'io.github.adrian0511:prompt-link:1.2.0'
 ```
 
 ## ⚙️ Configuration
@@ -55,7 +57,14 @@ In your `application.yml` (or `application.properties`):
 ai:
   api-key: ${OPENROUTER_API_KEY}   # Required. Never hardcode it.
   model: openai/gpt-4o-mini         # Model to use
+  models:                           # Optional fallbacks, tried in order (at most 3)
+    - anthropic/claude-3.5-haiku
   max-tokens: 5000                  # Maximum tokens in the answer
+  reasoning:                        # Optional; omitted entirely unless you set something
+    enabled: false                  # Turn reasoning off, on the models that allow it
+    # effort: low                   # ...or limit it by effort (low, medium, high)
+    # max-tokens: 200               # ...or by a token budget (not both)
+    # exclude: true                 # Reason, but do not return the reasoning
   temperature: 0.7                  # Optional; omitted, the model's own default applies
   url: https://openrouter.ai/api/v1 # OpenRouter base URL (do not include /chat/completions)
   host: http://localhost:8080       # Your app's URL (HTTP-Referer header, for attribution)
@@ -69,7 +78,39 @@ ai:
     max-period: 5s                  # Cap on the wait between attempts
 ```
 
-Only `api-key` is required; everything else defaults to the values above. Keep your key in an environment variable or in your platform's secret store.
+Only `api-key` is required; everything else defaults to the values above, except `models` and `reasoning`, which are not sent at all unless you configure them. Keep your key in an environment variable or in your platform's secret store.
+
+### 🪂 Fallback models
+
+A single model is a single point of failure, and free models in particular go down or get rate limited upstream for hours at a time. With `models`, OpenRouter tries each fallback in order whenever `model` fails, **within the same request**:
+
+```yaml
+ai:
+  model: google/gemma-4-31b-it:free
+  models:
+    - nvidia/nemotron-3-ultra-550b-a55b:free
+    - openrouter/free
+```
+
+- No extra round trip and no retry on your side, so it is **safe for streaming**: the first token comes from whichever model answered.
+- At most **3** fallbacks, which is OpenRouter's limit. More than that fails with `CONFIGURATION_ERROR` instead of OpenRouter's opaque 400.
+- Entries are trimmed and blank ones dropped, so `AI_MODELS=a, b,` from an environment variable works as expected.
+- Unlike `retry`, this has no double-billing risk: only the model that actually answers is charged.
+
+### 🧠 Reasoning models
+
+Reasoning tokens come out of the **same `max-tokens` budget** as the answer. With a tight budget, a reasoning model can spend all of it thinking and return no text at all. `reasoning` lets you control that:
+
+| Property | Sent as | Effect |
+| --- | --- | --- |
+| `enabled: false` | `"enabled": false` | Turns reasoning off, on the models that allow it. |
+| `effort: low` | `"effort": "low"` | Limits how much the model thinks. Passed through as is. |
+| `max-tokens: 200` | `"max_tokens": 200` | A token budget for the reasoning alone. |
+| `exclude: true` | `"exclude": true` | The model reasons, but the reasoning is not returned. |
+
+`effort` and `max-tokens` are mutually exclusive (OpenRouter rejects both together), and that combination fails with `CONFIGURATION_ERROR`. Models that do not reason ignore the block.
+
+If a model still comes back empty, you get an `INVALID_RESPONSE` saying so, never an empty answer passed off as a success.
 
 ### 🔁 Retries
 
@@ -184,8 +225,8 @@ AiResponse response = aiService.generate(conversation);
 | --- | --- | --- |
 | `> 0` | – | HTTP error from the API (401, 402, 429, 5xx…). `getErrorBody()` holds the body. |
 | `-1` | `NETWORK_ERROR` | The call never completed: timeout, DNS failure, connection refused. |
-| `-2` | `INVALID_RESPONSE` | The API answered 200 but with no `choices` or no usable content. |
-| `-3` | `CONFIGURATION_ERROR` | `ai.api-key` is missing. |
+| `-2` | `INVALID_RESPONSE` | The API answered 200 but with no `choices` or no text, including a stream that ends without a single token. When the cause is `finish_reason=length`, the message says so. |
+| `-3` | `CONFIGURATION_ERROR` | `ai.api-key` is missing, `ai.models` has more than 3 entries, or `ai.reasoning.effort` and `ai.reasoning.max-tokens` are both set. |
 | `-4` | `STREAM_ERROR` | The API failed mid-stream without a numeric HTTP code. Treated as transient. |
 
 Use `isHttpError()` as a shortcut for the first case, and catch it globally with `@RestControllerAdvice`:

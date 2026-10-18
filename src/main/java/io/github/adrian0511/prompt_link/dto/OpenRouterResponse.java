@@ -3,6 +3,7 @@ package io.github.adrian0511.prompt_link.dto;
 import java.util.List;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 /**
  * The body returned by {@code POST /chat/completions}.
@@ -25,6 +26,18 @@ public class OpenRouterResponse {
     public static class Choice {
 
         private Message message;
+
+        /** Why generation stopped: stop, length, error... Explains an answer that came back empty. */
+        @JsonProperty("finish_reason")
+        private String finishReason;
+
+        public String getFinishReason() {
+            return finishReason;
+        }
+
+        public void setFinishReason(String finishReason) {
+            this.finishReason = finishReason;
+        }
 
         public Message getMessage() {
             return message;

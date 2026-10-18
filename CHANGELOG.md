@@ -5,6 +5,33 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-10-18
+
+### Added
+
+- **Fallback models** with `ai.models`, sent as OpenRouter's `models`: when `ai.model` is down,
+  rate limited or rejects the request, OpenRouter answers with the next one, in the same request. It
+  is safe for streaming and has none of the double-billing risk of retries. At most 3, OpenRouter's
+  limit. Entries are trimmed and blank ones dropped, since they usually come from an environment
+  variable.
+- **Reasoning control** with `ai.reasoning.enabled`, `effort`, `max-tokens` and `exclude`, sent as
+  OpenRouter's `reasoning` block. Reasoning tokens come out of the same `max-tokens` budget as the
+  answer, so without this a reasoning model could spend all of it thinking and return no text. A blank
+  `effort` counts as unset.
+- Both apply to the blocking and the reactive path. Neither is sent unless configured, so upgrading
+  does not change any request.
+- Configuration mistakes OpenRouter would answer with an opaque 400 now fail with
+  `CONFIGURATION_ERROR` naming the property, before calling the API: more than 3 fallback models, or
+  `reasoning.effort` together with `reasoning.max-tokens`.
+
+### Changed
+
+- **An answer with no text is now an error.** A stream that ends without a single token, and a
+  `generate(...)` whose content is an empty string, now fail with `INVALID_RESPONSE`. Before, the
+  stream completed normally and `generate(...)` returned `""`, so callers showed an empty answer with
+  no idea why. When the cause is `finish_reason=length`, the message points at `ai.max-tokens` and
+  `ai.reasoning.*`. It is not retried: repeating the call would spend the budget the same way.
+
 ## [1.1.0] - 2026-07-13
 
 ### Added
