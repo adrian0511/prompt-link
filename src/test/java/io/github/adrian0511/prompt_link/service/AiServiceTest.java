@@ -7,6 +7,7 @@ import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
@@ -138,6 +139,52 @@ class AiServiceTest {
                 .isThrownBy(() -> service.generate("hello"))
                 .satisfies(e -> assertThat(e.getStatusCode())
                         .isEqualTo(AiClientException.INVALID_RESPONSE));
+    }
+
+    /** The blocking path reuses the same request: fallbacks and reasoning reach Feign as well. */
+    @Test
+    void sendsFallbackModelsAndReasoning() {
+        properties.setModels(List.of("vendor/b:free"));
+        properties.getReasoning().setEnabled(false);
+        when(aiClient.chatCompletion(any())).thenReturn(responseWith("ok"));
+
+        service.generate("hello");
+
+        ArgumentCaptor<OpenRouterRequest> captor = ArgumentCaptor.forClass(OpenRouterRequest.class);
+        verify(aiClient).chatCompletion(captor.capture());
+        OpenRouterRequest request = captor.getValue();
+
+        assertThat(request.getModels()).containsExactly("vendor/b:free");
+        assertThat(request.getReasoning().getEnabled()).isFalse();
+    }
+
+    /**
+     * An empty string is no more usable than a null: it is what a reasoning model returns when it
+     * spends the whole budget thinking, and it used to reach the caller as a successful answer.
+     */
+    @Test
+    void rejectsAnEmptyAnswerAndExplainsTheTokenBudget() {
+        OpenRouterResponse response = responseWith("");
+        response.getChoices().get(0).setFinishReason("length");
+        when(aiClient.chatCompletion(any())).thenReturn(response);
+
+        assertThatExceptionOfType(AiClientException.class)
+                .isThrownBy(() -> service.generate("hello"))
+                .satisfies(e -> {
+                    assertThat(e.getStatusCode()).isEqualTo(AiClientException.INVALID_RESPONSE);
+                    assertThat(e).hasMessageContaining("ai.reasoning");
+                });
+    }
+
+    @Test
+    void rejectsMoreFallbacksThanOpenRouterAcceptsWithoutCallingIt() {
+        properties.setModels(List.of("a/1", "a/2", "a/3", "a/4"));
+
+        assertThatExceptionOfType(AiClientException.class)
+                .isThrownBy(() -> service.generate("hello"))
+                .satisfies(e -> assertThat(e.getStatusCode())
+                        .isEqualTo(AiClientException.CONFIGURATION_ERROR));
+        verifyNoInteractions(aiClient);
     }
 
     @Test

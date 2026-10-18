@@ -166,7 +166,9 @@ class ReactiveAiServiceTest {
 
     @Test
     void asksTheApiForStreaming() {
-        script = List.of(event("[DONE]"));
+        script = List.of(
+                event("{\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}"),
+                event("[DONE]"));
 
         runner.run(context -> {
             context.getBean(ReactiveAiService.class).stream("hello").blockLast();
@@ -182,6 +184,139 @@ class ReactiveAiServiceTest {
 
             assertThat(receivedBody.get()).doesNotContain("stream");
         });
+    }
+
+    // --- An answer with no text --------------------------------------------------------------
+
+    /**
+     * A reasoning model can spend the whole max-tokens budget thinking: the stream carries reasoning
+     * deltas, ends with finish_reason=length and never a single content token. It used to complete
+     * normally, and the caller showed an empty answer without knowing anything had failed.
+     */
+    @Test
+    void failsWhenTheStreamEndsWithoutAnyText() {
+        script = List.of(
+                event("{\"choices\":[{\"delta\":{\"content\":\"\",\"reasoning\":\"Let me think\"}}]}"),
+                event("{\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":\"length\"}]}"),
+                event("[DONE]"));
+
+        runner.withPropertyValues("ai.max-tokens=600").run(context -> StepVerifier
+                .create(context.getBean(ReactiveAiService.class).stream("hello"))
+                .verifyErrorSatisfies(e -> {
+                    AiClientException error = (AiClientException) e;
+                    assertThat(error.getStatusCode()).isEqualTo(AiClientException.INVALID_RESPONSE);
+                    assertThat(error).hasMessageContaining("max-tokens (600)");
+                }));
+    }
+
+    /** Repeating the call would burn the same budget the same way: it is not retried. */
+    @Test
+    void doesNotRetryAStreamWithoutText() {
+        script = List.of(
+                event("{\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":\"length\"}]}"),
+                event("[DONE]"));
+
+        runner.withPropertyValues(RETRIES_ENABLED, "ai.retry.period=10ms").run(context -> {
+            StepVerifier.create(context.getBean(ReactiveAiService.class).stream("hello"))
+                    .verifyError(AiClientException.class);
+
+            assertThat(requests).hasValue(1);
+        });
+    }
+
+    @Test
+    void failsWhenGenerateReturnsEmptyContent() {
+        response = """
+                {"choices":[{"message":{"role":"assistant","content":""},"finish_reason":"length"}]}""";
+
+        runner.run(context -> StepVerifier
+                .create(context.getBean(ReactiveAiService.class).generate("hello"))
+                .verifyErrorSatisfies(e -> assertThat(((AiClientException) e).getStatusCode())
+                        .isEqualTo(AiClientException.INVALID_RESPONSE)));
+    }
+
+    // --- Fallback models and reasoning --------------------------------------------------------
+
+    /** Nothing new goes out unless configured, so upgrading does not change any request. */
+    @Test
+    void sendsNeitherFallbacksNorReasoningByDefault() {
+        runner.run(context -> {
+            context.getBean(ReactiveAiService.class).generate("hello").block();
+
+            assertThat(receivedBody.get()).doesNotContain("\"models\"").doesNotContain("reasoning");
+        });
+    }
+
+    /**
+     * The fallbacks usually come from an environment variable: a stray space or an empty entry would
+     * reach OpenRouter as an unknown model id.
+     */
+    @Test
+    void sendsTheFallbackModelsCleanedUp() {
+        runner.withPropertyValues("ai.models= vendor/b:free ,,vendor/c:free").run(context -> {
+            context.getBean(ReactiveAiService.class).generate("hello").block();
+
+            assertThat(receivedBody.get())
+                    .contains("\"models\":[\"vendor/b:free\",\"vendor/c:free\"]");
+        });
+    }
+
+    @Test
+    void sendsOnlyTheConfiguredReasoningFields() {
+        runner.withPropertyValues("ai.reasoning.enabled=false").run(context -> {
+            context.getBean(ReactiveAiService.class).generate("hello").block();
+
+            assertThat(receivedBody.get()).contains("\"reasoning\":{\"enabled\":false}");
+        });
+    }
+
+    @Test
+    void sendsTheReasoningBudgetInSnakeCase() {
+        runner.withPropertyValues("ai.reasoning.max-tokens=200").run(context -> {
+            context.getBean(ReactiveAiService.class).generate("hello").block();
+
+            assertThat(receivedBody.get()).contains("\"reasoning\":{\"max_tokens\":200}");
+        });
+    }
+
+    /** OpenRouter answers a 4th fallback with an opaque 400; this names the property instead. */
+    @Test
+    void rejectsMoreFallbacksThanOpenRouterAccepts() {
+        runner.withPropertyValues("ai.models=a/1,a/2,a/3,a/4").run(context -> {
+            StepVerifier.create(context.getBean(ReactiveAiService.class).stream("hello"))
+                    .verifyErrorSatisfies(e -> {
+                        AiClientException error = (AiClientException) e;
+                        assertThat(error.getStatusCode())
+                                .isEqualTo(AiClientException.CONFIGURATION_ERROR);
+                        assertThat(error).hasMessageContaining("ai.models");
+                    });
+
+            assertThat(requests).hasValue(0);
+        });
+    }
+
+    @Test
+    void rejectsReasoningEffortAndBudgetTogether() {
+        runner.withPropertyValues("ai.reasoning.effort=low", "ai.reasoning.max-tokens=200")
+                .run(context -> {
+                    StepVerifier.create(context.getBean(ReactiveAiService.class).generate("hello"))
+                            .verifyErrorSatisfies(e -> assertThat(
+                                    ((AiClientException) e).getStatusCode())
+                                    .isEqualTo(AiClientException.CONFIGURATION_ERROR));
+
+                    assertThat(requests).hasValue(0);
+                });
+    }
+
+    /** {@code effort: ${VAR:}} with the variable unset must not send an empty effort. */
+    @Test
+    void treatsABlankEffortAsUnset() {
+        runner.withPropertyValues("ai.reasoning.effort=", "ai.reasoning.max-tokens=200")
+                .run(context -> {
+                    context.getBean(ReactiveAiService.class).generate("hello").block();
+
+                    assertThat(receivedBody.get()).contains("\"reasoning\":{\"max_tokens\":200}");
+                });
     }
 
     // --- The error that used to slip through mid-stream ---------------------------------------

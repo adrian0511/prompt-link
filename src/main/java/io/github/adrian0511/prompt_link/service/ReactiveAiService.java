@@ -2,6 +2,7 @@ package io.github.adrian0511.prompt_link.service;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
 
@@ -85,18 +86,14 @@ public class ReactiveAiService {
      * @return the model's answer, or an {@link AiClientException} error signal
      */
     public Mono<AiResponse> generate(List<Message> messages) {
-        return Mono.defer(() -> {
-            validate(messages);
-
-            return request(messages, false)
-                    .retrieve()
-                    .onStatus(status -> status.isError(), this::toTypedError)
-                    .bodyToMono(OpenRouterResponse.class)
-                    .map(this::extractContent)
-                    .onErrorMap(notTypedYet(), this::asNetworkError)
-                    // Retrying is safe here: nothing has been handed to the caller yet.
-                    .retryWhen(retryPolicy(() -> false));
-        });
+        return Mono.defer(() -> request(messages, false)
+                .retrieve()
+                .onStatus(status -> status.isError(), this::toTypedError)
+                .bodyToMono(OpenRouterResponse.class)
+                .map(this::extractContent)
+                .onErrorMap(notTypedYet(), this::asNetworkError)
+                // Retrying is safe here: nothing has been handed to the caller yet.
+                .retryWhen(retryPolicy(() -> false)));
     }
 
     /**
@@ -131,12 +128,11 @@ public class ReactiveAiService {
      */
     public Flux<String> stream(List<Message> messages) {
         return Flux.defer(() -> {
-            validate(messages);
-
             // Retrying a half-delivered stream would duplicate text on the user's screen: the answer
             // would start again from the beginning and they would read the same sentence twice. It is
             // only safe to retry while nothing has been handed over.
             AtomicBoolean tokenEmitted = new AtomicBoolean();
+            AtomicReference<String> finishReason = new AtomicReference<>();
 
             return request(messages, true)
                     .accept(MediaType.TEXT_EVENT_STREAM)
@@ -145,8 +141,12 @@ public class ReactiveAiService {
                     .bodyToFlux(String.class)
                     .takeUntil(END_OF_STREAM::equals)
                     .filter(event -> !END_OF_STREAM.equals(event))
-                    .map(this::extractToken)
+                    .map(event -> extractToken(event, finishReason))
                     .filter(token -> !token.isEmpty())
+                    // A stream that ends without a single token would otherwise complete normally,
+                    // and the caller would show an empty answer with no idea why.
+                    .switchIfEmpty(Flux.defer(() -> Flux.error(ChatRequests.emptyAnswer(
+                            finishReason.get(), properties.getMaxTokens()))))
                     .doOnNext(token -> tokenEmitted.set(true))
                     .onErrorMap(notTypedYet(), this::asNetworkError)
                     .retryWhen(retryPolicy(tokenEmitted::get));
@@ -154,17 +154,10 @@ public class ReactiveAiService {
     }
 
     private WebClient.RequestHeadersSpec<?> request(List<Message> messages, boolean streaming) {
-        OpenRouterRequest body = new OpenRouterRequest();
-        body.setModel(properties.getModel());
-        body.setMessages(List.copyOf(messages));
-        body.setMaxTokens(properties.getMaxTokens());
-        body.setTemperature(properties.getTemperature());
-        body.setStream(streaming ? Boolean.TRUE : null);
-
         return webClient.post()
                 .uri("/chat/completions")
                 .contentType(MediaType.APPLICATION_JSON)
-                .bodyValue(body);
+                .bodyValue(ChatRequests.build(properties, messages, streaming));
     }
 
     /**
@@ -230,12 +223,10 @@ public class ReactiveAiService {
                     null);
         }
 
-        Message message = response.getChoices().get(0).getMessage();
-        if (message == null || message.getContent() == null) {
-            throw new AiClientException(
-                    "The AI API returned a choice with no content",
-                    AiClientException.INVALID_RESPONSE,
-                    null);
+        OpenRouterResponse.Choice choice = response.getChoices().get(0);
+        Message message = choice.getMessage();
+        if (message == null || !StringUtils.hasLength(message.getContent())) {
+            throw ChatRequests.emptyAnswer(choice.getFinishReason(), properties.getMaxTokens());
         }
 
         return new AiResponse(message.getContent());
@@ -251,7 +242,7 @@ public class ReactiveAiService {
      * stream would end <em>normally</em>: the user would see their answer cut off mid-sentence and the
      * application would never know.
      */
-    private String extractToken(String event) {
+    private String extractToken(String event, AtomicReference<String> finishReason) {
         JsonNode node;
         try {
             node = objectMapper.readTree(event);
@@ -271,7 +262,13 @@ public class ReactiveAiService {
                     event);
         }
 
-        JsonNode content = node.path("choices").path(0).path("delta").path("content");
+        JsonNode choice = node.path("choices").path(0);
+        JsonNode reason = choice.path("finish_reason");
+        if (reason.isTextual()) {
+            finishReason.set(reason.asText());
+        }
+
+        JsonNode content = choice.path("delta").path("content");
         return content.isTextual() ? content.asText() : "";
     }
 
@@ -287,18 +284,6 @@ public class ReactiveAiService {
     private static int streamErrorStatus(JsonNode error) {
         JsonNode code = error.path("code");
         return code.isInt() ? code.asInt() : AiClientException.STREAM_ERROR;
-    }
-
-    private void validate(List<Message> messages) {
-        if (messages == null || messages.isEmpty()) {
-            throw new IllegalArgumentException("The conversation must have at least one message");
-        }
-        if (!StringUtils.hasText(properties.getApiKey())) {
-            throw new AiClientException(
-                    "The ai.api-key property is not configured",
-                    AiClientException.CONFIGURATION_ERROR,
-                    null);
-        }
     }
 
     /** Anything this library has not already typed is a transport failure. */

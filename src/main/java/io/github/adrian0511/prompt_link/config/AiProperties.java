@@ -1,6 +1,8 @@
 package io.github.adrian0511.prompt_link.config;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
@@ -22,6 +24,16 @@ public class AiProperties {
 
     /** Model to use, in provider/model form. */
     private String model = "openai/gpt-4o-mini";
+
+    /**
+     * Fallback models, tried in order when {@code model} fails: provider down, rate limited, or the
+     * request rejected. At most 3, which is OpenRouter's limit.
+     *
+     * <p>OpenRouter does the switching on its side within the same request, so a fallback costs no
+     * extra round trip and is safe for streaming: the first token comes from whichever model
+     * answered.
+     */
+    private List<String> models = new ArrayList<>();
 
     /** Maximum number of tokens in the answer. */
     private int maxTokens = 5000;
@@ -49,6 +61,74 @@ public class AiProperties {
 
     /** Retries on rate limits and server errors. Disabled by default. */
     private final Retry retry = new Retry();
+
+    /** Reasoning control for models that think before answering. Not sent unless configured. */
+    private final Reasoning reasoning = new Reasoning();
+
+    /**
+     * How much a reasoning model may think before answering.
+     *
+     * <p>It matters because reasoning tokens come out of the same {@code max-tokens} budget as the
+     * answer: with a tight budget, a model can spend all of it thinking and return no text at all.
+     *
+     * <p>Every field is null by default and the whole block is then omitted, so each model keeps its
+     * own behaviour. Models that do not reason ignore it.
+     */
+    public static class Reasoning {
+
+        /** Set to false to turn reasoning off, on the models that allow it. */
+        private Boolean enabled;
+
+        /**
+         * Reasoning effort: low, medium, high... Passed through as is, so new levels OpenRouter adds
+         * work without a new release. Cannot be combined with max-tokens.
+         */
+        private String effort;
+
+        /** Token budget for the reasoning alone. Cannot be combined with effort. */
+        private Integer maxTokens;
+
+        /** When true the model still reasons, but the reasoning is not returned in the response. */
+        private Boolean exclude;
+
+        public Boolean getEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(Boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getEffort() {
+            return effort;
+        }
+
+        /** Blank counts as unset, so {@code effort: ${SOME_VAR:}} can be left empty. */
+        public void setEffort(String effort) {
+            this.effort = effort == null || effort.isBlank() ? null : effort.strip();
+        }
+
+        public Integer getMaxTokens() {
+            return maxTokens;
+        }
+
+        public void setMaxTokens(Integer maxTokens) {
+            this.maxTokens = maxTokens;
+        }
+
+        public Boolean getExclude() {
+            return exclude;
+        }
+
+        public void setExclude(Boolean exclude) {
+            this.exclude = exclude;
+        }
+
+        /** Whether any field was configured; if not, no reasoning block is sent. */
+        public boolean isConfigured() {
+            return enabled != null || effort != null || maxTokens != null || exclude != null;
+        }
+    }
 
     /**
      * Retry policy for 429 (rate limit) and 5xx responses.
@@ -113,6 +193,18 @@ public class AiProperties {
 
     public Retry getRetry() {
         return retry;
+    }
+
+    public Reasoning getReasoning() {
+        return reasoning;
+    }
+
+    public List<String> getModels() {
+        return models;
+    }
+
+    public void setModels(List<String> models) {
+        this.models = models;
     }
 
     public String getApiKey() {
